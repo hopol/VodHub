@@ -87,7 +87,7 @@ server {
     listen 443 ssl http2;
     server_name example.com;
 
-    root /var/www/vodhub;
+    root /var/www/VodHub;
     index index.php;
 
     ssl_certificate     /etc/letsencrypt/live/example.com/fullchain.pem;
@@ -172,7 +172,7 @@ docker run -d -p 8080:80 -v vodhub-runtime:/var/www/html/runtime vodhub
 ## 权限与目录
 
 ```
-vodhub/
+VodHub/
 ├── *.php              # 644
 ├── includes/          # 755 目录 / 644 文件
 ├── templates/         # 755 / 644
@@ -220,11 +220,11 @@ location /vod/ {
 
 ```bash
 # 1. 备份（最重要！数据库里有你的全部配置）
-cp -r runtime/ /backup/vodhub-runtime-$(date +%F)/
+cp -r runtime/ /backup/VodHub-runtime-$(date +%F)/
 
 # 2. 用新版本覆盖程序文件（不含 runtime/）
 #    绝大多数情况只需要覆盖，不会丢数据
-unzip vodhub-1.x.x.zip -d /var/www/
+unzip VodHub-1.x.x.zip -d /var/www/   # GitHub 自动归档名 = 仓库名
 
 # 3. 恢复权限
 chmod -R 755 runtime

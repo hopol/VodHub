@@ -20,7 +20,7 @@ VodHub 目前处于快速迭代期，**只对最新版本（`main` 分支）提�
 ### 推荐方式：GitHub 私密漏洞报告
 
 1. 打开本仓库 → 顶部 **Security** 标签 → **Report a vulnerability**
-2. 或直接访问：`https://github.com/hopol/vodhub/security/advisories/new`
+2. 或直接访问：`https://github.com/hopol/VodHub/security/advisories/new`
 
 这样报告只会对你和维护者可见，直到修复发布。
 

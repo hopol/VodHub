@@ -39,4 +39,4 @@
 
 ---
 
-> 文档有问题或没写清楚？[提个 Issue](https://github.com/hopol/vodhub/issues) 或直接提 PR 改 —— 每一次修正都在帮下一个人少踩一个坑。
+> 文档有问题或没写清楚？[提个 Issue](https://github.com/hopol/VodHub/issues) 或直接提 PR 改 —— 每一次修正都在帮下一个人少踩一个坑。

@@ -260,7 +260,7 @@ define('CACHE_TTL_TYPE', 86400);  // 分类：默认 24 小时
 
 1. 确认 `AllowOverride All`（或至少 `FileInfo`）—— 虚拟主机主配置里
    ```apache
-   <Directory /var/www/vodhub>
+   <Directory /var/www/VodHub>
        AllowOverride All
    </Directory>
    ```
@@ -307,7 +307,7 @@ ini_set('opcache.enable', '0');
 
 ## 还是解决不了？
 
-请开 [Issue](https://github.com/hopol/vodhub/issues/new/choose)，**带上这些信息**能大幅加快定位：
+请开 [Issue](https://github.com/hopol/VodHub/issues/new/choose)，**带上这些信息**能大幅加快定位：
 
 1. **完整报错文字**（尤其是带括号的诊断信息，一个字都别改）
 2. PHP 版本、Web 服务器、操作系统

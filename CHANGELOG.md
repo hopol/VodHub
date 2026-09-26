@@ -19,6 +19,8 @@
 
 首个公开发布版本。
 
+> **协议**：本版本起采用 [GPL-3.0](LICENSE)，© **HopoL**。衍生作品必须同样开源。
+
 ### 新增
 
 **核心**
@@ -74,5 +76,5 @@
 
 ---
 
-[Unreleased]: https://github.com/hopol/vodhub/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/hopol/vodhub/releases/tag/v1.0.0
+[Unreleased]: https://github.com/hopol/VodHub/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/hopol/VodHub/releases/tag/v1.0.0

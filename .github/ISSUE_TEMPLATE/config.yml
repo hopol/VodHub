@@ -2,11 +2,11 @@ blank_issues_enabled: false
 
 contact_links:
   - name: 📚 先看看文档
-    url: https://github.com/hopol/vodhub/tree/main/docs
+    url: https://github.com/hopol/VodHub/tree/main/docs
     about: 部署、配置、模板开发、故障排查的完整文档，很多问题文档里就有答案
   - name: 🔒 安全漏洞
-    url: https://github.com/hopol/vodhub/security/advisories/new
+    url: https://github.com/hopol/VodHub/security/advisories/new
     about: 请勿开公开 Issue，走私密漏洞报告渠道
   - name: ❓ 使用问题 / 想法讨论
-    url: https://github.com/hopol/vodhub/discussions
+    url: https://github.com/hopol/VodHub/discussions
     about: 使用疑问、经验分享、想法头脑风暴，欢迎开 Discussion

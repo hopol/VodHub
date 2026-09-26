@@ -27,7 +27,7 @@
 
 ## 执行
 
-如遇不可接受的行为，请通过 [GitHub 私密漏洞报告](https://github.com/hopol/vodhub/security/advisories/new) 或 GitHub 个人主页的联系方式私下联系维护者（标题注明 `[CONDUCT]`）。
+如遇不可接受的行为，请通过 [GitHub 私密漏洞报告](https://github.com/hopol/VodHub/security/advisories/new) 或 GitHub 个人主页的联系方式私下联系维护者（标题注明 `[CONDUCT]`）。
 
 所有投诉都会被**及时、公正地审查与回应**。维护者有义务保护报告者的隐私，除非经其同意。
 

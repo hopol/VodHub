@@ -4,13 +4,13 @@
 
 **纯 PHP 自托管影视聚合站 —— 不存储任何视频，只聚合你自己的接口**
 
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
 [![PHP Version](https://img.shields.io/badge/PHP-8.0%2B-8892bf.svg)](config.php)
 [![Requirements](https://img.shields.io/badge/requirements-curl%20%7C%20pdo__sqlite-4c9f70.svg)](#-环境要求)
-[![CI](https://github.com/hopol/vodhub/actions/workflows/ci.yml/badge.svg)](https://github.com/hopol/vodhub/actions/workflows/ci.yml)
+[![CI](https://github.com/hopol/VodHub/actions/workflows/ci.yml/badge.svg)](https://github.com/hopol/VodHub/actions/workflows/ci.yml)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-[快速开始](#-快速开始) · [在线文档](docs/) · [模板开发](docs/templates.md) · [提交 Issue](https://github.com/hopol/vodhub/issues)
+[快速开始](#-快速开始) · [在线文档](docs/) · [模板开发](docs/templates.md) · [提交 Issue](https://github.com/hopol/VodHub/issues)
 
 </div>
 
@@ -91,7 +91,7 @@ VodHub 是一个**你自己部署**的影视聚合站。它从你在后台配置
 server {
     listen 80;
     server_name example.com;
-    root /var/www/vodhub;
+    root /var/www/VodHub;
     index index.php;
 
     location / {
@@ -131,7 +131,7 @@ Apache 用户 `.htaccess` 已内置，无需额外配置。
 ## 🗂 项目结构
 
 ```
-vodhub/
+VodHub/
 ├── index.php / list.php / play.php / search.php ...   # 前台页面（只管取数据）
 ├── admin.php                                          # 后台入口
 ├── config.php                                         # 全局配置（PHP 版本保护 + 路径常量）
@@ -168,7 +168,24 @@ vodhub/
 
 ## 📄 协议
 
-[MIT](LICENSE) © hopol
+本项目采用 [**GNU GPL-3.0**](LICENSE) 协议发布，© **HopoL**（2026）。
+
+**GPL-3.0 是一份带传染性的强 copyleft 协议** —— 这是本项目刻意的选择：
+
+| 你可以 ✅ | 你必须 ⚠️ |
+|----------|----------|
+| 自由使用、复制、运行本项目 | **衍生作品必须同样以 GPL-3.0 开源** |
+| 自由修改源码 | 必须向你的用户提供完整源码 |
+| 自由分发（含商业分发） | 必须保留原有的版权声明与协议文本 |
+| 用它搭建你自己的站点 | 不得附加额外限制、不得授予额外专利授权 |
+
+> **什么算"衍生作品"？** 基于本项目代码修改、扩展、二次开发的作品；把它作为组件整体分发的作品。
+>
+> **什么不算？** 你通过本项目部署出的**站点本身**、你配置的数据源、你在后台填写的内容 —— 那些是**数据**，不受本项目协议约束。
+>
+> 详见 [LICENSE](LICENSE) 全文，或阅读 [GPL-3.0 官方说明](https://www.gnu.org/licenses/gpl-3.0.zh-cn.html)。
+
+贡献代码即表示你同意以 GPL-3.0 授权你的改动（见 [贡献指南](CONTRIBUTING.md)）。
 
 ---
 

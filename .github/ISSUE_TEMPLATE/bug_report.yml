@@ -9,7 +9,7 @@ body:
         感谢你花时间报告问题 🙏
 
         **提交前请确认**：
-        - 已经搜过 [现有 Issues](https://github.com/hopol/vodhub/issues)，没有重复
+        - 已经搜过 [现有 Issues](https://github.com/hopol/VodHub/issues)，没有重复
         - 相关文件是最新版本
         - 已清空 `runtime/cache` 后重试过
 
