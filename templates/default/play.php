@@ -72,7 +72,7 @@ require_once __DIR__ . '/header.php';
             <dt>语言</dt><dd><?= h(($detail['vod_lang'] ?? '') ?: '未知') ?></dd>
             <dt>清晰度</dt><dd><?= h(($detail['vod_remarks'] ?? '') ?: ($detail['vod_version'] ?? '') ?: '未知') ?></dd>
             <dt>添加时间</dt><dd><?= h($detail['vod_time'] ?? '未知') ?></dd>
-            <dt>数据源</dt><dd><?= h($source['name']) ?></dd>
+            <dt>数据源</dt><dd><?= h($source['name'] ?? '未知') ?></dd>
         </dl>
     </aside>
 </div>
