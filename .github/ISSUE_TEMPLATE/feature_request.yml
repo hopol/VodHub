@@ -1,0 +1,65 @@
+name: 功能建议
+description: 提出新想法或改进
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你的想法 💡
+
+        **先说你想解决的问题，再说具体方案。** —— 有时更好的解法和你想的不一样，
+        我们更关心**问题本身**。
+
+        大功能建议先开讨论，确定方向后再动手，能省掉很多返工。
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你想解决什么问题？
+      description: 而不是"我想要 X 功能"
+      placeholder: |
+        我有 20 多个数据源，其中有几个是短视频站。现在的分组标签只能区分组名，
+        看不出哪个组是我常用的，每次都要挨个点。
+    validations:
+      required: true
+
+  - type: textarea
+    id: current
+    attributes:
+      label: 现有功能为什么不够用？
+      placeholder: 现在只能靠记忆，或者把常用源排在前面（但这样打乱了内容分类）
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 你的想法
+      description: 模糊的想法也欢迎，附界面草图 / 截图更好
+      placeholder: 给分组加个颜色标记，或者允许给分组设「常用」星标
+
+  - type: dropdown
+    id: type
+    attributes:
+      label: 这属于哪类
+      options:
+        - 新增功能
+        - 改进现有功能
+        - 新增模板
+        - 性能优化
+        - 文档改进
+        - 其他
+    validations:
+      required: true
+
+  - type: dropdown
+    id: willing
+    attributes:
+      label: 你愿意自己实现它吗？
+      options:
+        - 愿意，我可以提 PR
+        - 愿意，但需要指导
+        - 暂时不愿意
+    validations:
+      required: true

@@ -1,0 +1,310 @@
+/*
+ * Netflix 风格样式
+ * 红色主调 #e50914，深色背景，密集网格 + 悬浮放大，2:3 竖版封面
+ */
+
+:root {
+    --tm-primary: #e50914;
+    --tm-primary-dark: #f6121d;
+    --tm-radius: 4px;
+    --tm-cover-ratio: 66.67%;     /* 2:3 */
+    --tm-columns: 4;
+    --tm-card-bg: #141414;
+    --tm-text: #ffffff;
+    --tm-text-2: #b3b3b3;
+    --tm-text-3: #808080;
+    --tm-border: #262626;
+    --tm-hover: #232323;
+    --tm-bg: #0f0f0f;
+}
+
+body {
+    background: var(--tm-bg);
+    color: var(--tm-text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+/* ============================= 顶栏 ============================= */
+
+.topbar {
+    background: rgba(0,0,0,.9);
+    border-bottom: 1px solid var(--tm-border);
+    backdrop-filter: blur(8px);
+}
+
+.brand { color: var(--tm-primary); font-size: 19px; font-weight: 800; font-style: italic; }
+.brand-icon { background: var(--tm-primary); }
+.brand-text { color: var(--tm-primary); }
+
+.search-box {
+    background: var(--tm-hover);
+    border-color: var(--tm-border);
+    border-radius: var(--tm-radius);
+}
+.search-box input { color: var(--tm-text); }
+.search-box input::placeholder { color: var(--tm-text-3); }
+.search-box button:hover { color: var(--tm-primary); }
+
+.topbar-nav a { color: var(--tm-text-2); }
+.topbar-nav a:hover { color: var(--tm-text); background: var(--tm-hover); }
+
+.source-tabs { border-top: 1px solid var(--tm-border); }
+.source-tab {
+    background: var(--tm-hover);
+    border-color: var(--tm-border);
+    color: var(--tm-text-2);
+}
+.source-tab.active { background: var(--tm-primary); color: #fff; border-color: var(--tm-primary); }
+
+/* ============================= 密集网格 + 悬浮放大 ============================= */
+
+.vod-grid {
+    grid-template-columns: repeat(var(--list-columns, var(--tm-columns, 4)), minmax(0, 1fr));
+    gap: 8px;
+}
+
+@media (max-width: 1280px) { .vod-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); } }
+@media (max-width: 1024px) { .vod-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
+@media (max-width: 768px)  { .vod-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+@media (max-width: 480px)  { .vod-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+
+.vod-card {
+    background: transparent;
+    border: none;
+    border-radius: var(--tm-radius);
+    overflow: hidden;
+    box-shadow: none;
+    transition: transform .2s, z-index 0s;
+    position: relative;
+    z-index: 1;
+}
+
+.vod-card:hover {
+    transform: scale(1.08);
+    z-index: 10;
+    box-shadow: 0 8px 32px rgba(0,0,0,.6);
+}
+
+/* 封面：2:3 竖版 */
+.cover {
+    aspect-ratio: var(--tm-cover-ratio, 2 / 3);      /* 后台"模板编辑"可调：封面高度比例 */
+    position: relative;
+    overflow: hidden;
+    background: var(--tm-hover);
+    border-radius: var(--tm-radius);
+}
+
+.cover img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transition: transform .3s;
+}
+
+.vod-card:hover .cover img { transform: scale(1.1); }
+
+/* 底部渐变信息条 */
+.cover::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 40%;
+    background: linear-gradient(transparent, rgba(0,0,0,.85));
+    opacity: 0;
+    transition: opacity .3s;
+    pointer-events: none;
+}
+.vod-card:hover .cover::after { opacity: 1; }
+
+/* 角标 */
+.badge-time {
+    top: auto;
+    bottom: 6px;
+    right: 6px;
+    left: auto;
+    background: rgba(0,0,0,.85);
+    color: var(--tm-primary);
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 3px;
+    z-index: 2;
+    opacity: 0;
+    transition: opacity .3s;
+}
+.vod-card:hover .badge-time { opacity: 1; }
+
+.badge-score {
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    right: auto;
+    bottom: auto;          /* 必须重置，否则与 top 同时生效会被拉伸 */
+    background: var(--tm-primary);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 3px 8px;
+    border-radius: 3px;
+    z-index: 2;
+    line-height: 1.2;
+    white-space: nowrap;
+}
+
+.vod-info { padding: 8px 4px 4px; }
+
+.vod-info h3 {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--tm-text);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    white-space: normal;
+    line-height: 1.3;
+}
+.vod-card:hover .vod-info h3 { color: var(--tm-primary); }
+
+.vod-sub { color: var(--tm-text-3); font-size: 11px; }
+
+/* ============================= 卡片容器 ============================= */
+
+.source-block,
+.detail-card,
+.play-side,
+.login-card {
+    background: var(--tm-card-bg);
+    border-color: var(--tm-border);
+    border-radius: var(--tm-radius);
+    box-shadow: none;
+    border: 1px solid var(--tm-border);
+}
+
+/* ============================= 标签 / 按钮 ============================= */
+
+.chip {
+    background: var(--tm-hover);
+    border-color: var(--tm-border);
+    color: var(--tm-text-2);
+    border-radius: var(--tm-radius);
+}
+.chip:hover { color: var(--tm-text); border-color: var(--tm-text-2); }
+.chip.active { background: var(--tm-primary); color: #fff; border-color: var(--tm-primary); }
+.chip-plain { background: var(--tm-hover); color: var(--tm-text-2); cursor: default; border-color: var(--tm-border); }
+.chip-score { background: var(--tm-primary); color: #fff; }
+
+.btn-primary { background: var(--tm-primary); color: #fff; }
+.btn-primary:hover { background: var(--tm-primary-dark); }
+.btn-ghost {
+    background: transparent;
+    border-color: var(--tm-border);
+    color: var(--tm-text-2);
+}
+.btn-ghost:hover { color: var(--tm-text); border-color: var(--tm-text-2); }
+
+/* ============================= 分类与列表页 ============================= */
+
+.type-chip {
+    background: var(--tm-hover);
+    border-color: var(--tm-border);
+    color: var(--tm-text-2);
+    border-radius: var(--tm-radius);
+}
+.type-chip:hover {
+    background: var(--tm-primary);
+    border-color: var(--tm-primary);
+    color: #fff;
+    transform: none;
+}
+
+.list-title { font-size: 22px; color: var(--tm-text); }
+.list-meta { color: var(--tm-text-3); }
+
+/* ============================= 分页 ============================= */
+
+.pg {
+    background: var(--tm-hover);
+    border-color: var(--tm-border);
+    color: var(--tm-text-2);
+    border-radius: var(--tm-radius);
+}
+.pg:hover { border-color: var(--tm-text-2); color: var(--tm-text); }
+.pg.active { background: var(--tm-primary); border-color: var(--tm-primary); color: #fff; }
+
+/* ============================= 播放页 ============================= */
+
+.play-layout { grid-template-columns: 1fr 320px; }
+.detail-name { font-size: 24px; color: var(--tm-text); }
+.detail-desc p { color: var(--tm-text-2); }
+.info-list dt { color: var(--tm-text-3); }
+.info-list dd { color: var(--tm-text-2); }
+
+
+
+/* ===================== 手机端播放页（必带，否则基础断点被覆盖压掉） ===================== */
+@media (max-width: 860px) {
+    .play-layout {
+        grid-template-columns: 1fr;
+        gap: 14px;
+    }
+    .play-main,
+    .play-side { min-width: 0; max-width: 100%; }
+
+    /* 选集：自动换行，多行同时可见；仅当集数过多时固定高度纵向滚动。
+       注意：不能用 nowrap 横向滚动，用户必须左右拖动才能看全部，体验差。 */
+    .episodes-block { padding: 10px 12px; margin-bottom: 12px; }
+    .player-sources {
+        flex-wrap: wrap;
+        gap: 6px;
+        max-height: 200px;      /* 默认约可见 3 行 */
+        overflow-x: hidden;      /* 不允许横向拖动 */
+        overflow-y: auto;        /* 集数多时纵向滚动 */
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: thin;
+        padding: 2px 0;
+    }
+    .player-sources .chip { flex-shrink: 0; }
+
+    .detail-card,
+    .play-side { padding: 14px 12px; }
+
+    /* 信息表：dd 允许任意换行，长字段不撑破容器 */
+    .info-list {
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 8px 10px;
+    }
+    .info-list dd {
+        text-align: right;
+        word-break: break-all;
+        overflow-wrap: anywhere;
+        min-width: 0;
+    }
+
+    .player { aspect-ratio: 16 / 9; }
+    .player-empty { padding: 40px 16px; }
+}
+
+/* ============================= 登录 ============================= */
+
+.login-body { background: var(--tm-bg); }
+.login-card {
+    background: var(--tm-card-bg);
+    box-shadow: 0 8px 32px rgba(0,0,0,.5);
+}
+.login-card h1 { color: var(--tm-primary); font-style: italic; font-weight: 800; }
+.field input {
+    background: var(--tm-hover);
+    border-color: var(--tm-border);
+    color: var(--tm-text);
+}
+.field input:focus { border-color: var(--tm-primary); background: var(--tm-card-bg); }
+
+/* ============================= 页脚 ============================= */
+
+.footer {
+    background: var(--tm-bg);
+    border-top: 1px solid var(--tm-border);
+    color: var(--tm-text-3);
+}

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="360" viewBox="0 0 240 360">
+  <rect width="240" height="360" fill="#1f232c"/>
+  <g fill="none" stroke="#6b7383" stroke-width="3">
+    <rect x="60" y="120" width="120" height="80" rx="8"/>
+    <path d="M105 140 L135 160 L105 180 Z" fill="#6b7383"/>
+  </g>
+  <text x="120" y="240" text-anchor="middle"
+        font-family="sans-serif" font-size="18" fill="#9aa3b2">暂无封面</text>
+</svg>

@@ -1,0 +1,132 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------
+  # 语法检查：全量 PHP 文件 php -l
+  # 本项目零依赖、无 composer，所以不做 install/build，只验语法与结构
+  # ---------------------------------------------------------------
+  lint:
+    name: PHP ${{ matrix.php }} 语法检查
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.0', '8.1', '8.2', '8.3', '8.4']
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP ${{ matrix.php }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: curl, pdo_sqlite, json, mbstring
+          coverage: none
+
+      - name: PHP 版本确认
+        run: php -v
+
+      - name: 逐文件语法检查
+        run: |
+          set -euo pipefail
+          fail=0
+          count=0
+          while IFS= read -r -d '' f; do
+            count=$((count + 1))
+            if ! out=$(php -l "$f" 2>&1); then
+              echo "::error file=${f},title=PHP syntax error::${out}"
+              echo "❌ $f"
+              echo "$out"
+              fail=1
+            fi
+          done < <(find . -name '*.php' -not -path './runtime/*' -not -path './vendor/*' -print0)
+          echo ""
+          echo "共检查 ${count} 个 PHP 文件"
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::存在语法错误"
+            exit 1
+          fi
+          echo "✅ 全部通过"
+
+      - name: 禁止提交运行期数据
+        run: |
+          if git ls-files | grep -E '(^|/)(runtime/|.*\.(db|sqlite|sqlite3|log)$)'; then
+            echo "::error::仓库中混入了运行期数据文件（含密码哈希 / 数据源地址），请勿提交"
+            git ls-files | grep -E '(^|/)(runtime/|.*\.(db|sqlite|sqlite3|log)$)'
+            exit 1
+          fi
+          echo "✅ 未混入运行期数据"
+
+      - name: 模板结构完整性
+        run: |
+          set -euo pipefail
+          # 每套模板必须具备的文件（缺失会静默回退 default，容易被忽略）
+          required="theme.json header.php footer.php index.php list.php play.php search.php history.php login.php player_script.php"
+          fail=0
+          for dir in templates/*/; do
+            tpl=$(basename "$dir")
+            missing=""
+            for f in $required; do
+              [ -f "$dir$f" ] || missing="$missing $f"
+            done
+            # default 模板没有自带 style.css —— 它复用站点公共的 static/style.css，
+            # 这是刻意设计（tplEditorVars() 对 default 有专门回落），不算缺失。
+            if [ "$tpl" != "default" ]; then
+              [ -f "$dir/style.css" ] || missing="$missing style.css"
+            fi
+            if [ -n "$missing" ]; then
+              echo "::error title=模板 $tpl 缺少文件::$missing"
+              echo "❌ $tpl 缺少:$missing"
+              fail=1
+            else
+              echo "✅ $tpl"
+            fi
+          done
+          exit $fail
+
+  # ---------------------------------------------------------------
+  # 结构自检：确保关键文档与配置都在
+  # ---------------------------------------------------------------
+  docs:
+    name: 文档与配置完整性
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 必需文件检查
+        run: |
+          set -euo pipefail
+          required="README.md LICENSE CONTRIBUTING.md SECURITY.md CHANGELOG.md CODE_OF_CONDUCT.md .gitignore .htaccess config.php"
+          fail=0
+          for f in $required; do
+            if [ -f "$f" ]; then echo "✅ $f"; else echo "❌ 缺少 $f"; fail=1; fi
+          done
+          exit $fail
+
+      - name: 运行期目录已忽略
+        run: |
+          grep -q '^/runtime/$' .gitignore \
+            || { echo "::error::.gitignore 未忽略 runtime/，存在泄露密码哈希风险"; exit 1; }
+          echo "✅ .gitignore 正确忽略 runtime/"
+
+      - name: README 内链接可达
+        run: |
+          set -euo pipefail
+          # README 中的相对链接指向的文件必须存在（锚点与外链不检查）
+          fail=0
+          grep -oE '\]\([^)#]+\)' README.md | sed 's/](\(.*\))/\1/' \
+            | grep -vE '^(https?:|mailto:)' | sort -u \
+            | while read -r link; do
+                [ -e "$link" ] || { echo "❌ README 链接失效: $link"; fail=1; }
+              done
+          echo "✅ README 相对链接检查完成"

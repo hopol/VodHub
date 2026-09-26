@@ -1,0 +1,98 @@
+name: 报告 Bug
+description: 某个功能没有按预期工作
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你花时间报告问题 🙏
+
+        **提交前请确认**：
+        - 已经搜过 [现有 Issues](https://github.com/hopol/vodhub/issues)，没有重复
+        - 相关文件是最新版本
+        - 已清空 `runtime/cache` 后重试过
+
+        > ⚠️ **请勿粘贴真实接口地址、访问密码或管理员密码。**
+
+  - type: input
+    id: php-version
+    attributes:
+      label: PHP 版本
+      description: 运行 `php -v` 查看
+      placeholder: "8.2.10"
+    validations:
+      required: true
+
+  - type: input
+    id: server
+    attributes:
+      label: Web 服务器与系统
+      placeholder: "Nginx 1.24 / Debian 12"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 问题发生在哪个部分
+      options:
+        - 数据源管理
+        - 模板切换 / 模板编辑
+        - 前台页面（首页 / 列表 / 播放 / 搜索）
+        - 访问密码 / 管理登录
+        - 缓存 / 性能
+        - 安装与部署
+        - 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 尽量具体，能让我们一步步照着做出来
+      placeholder: |
+        1. 后台 → 数据源管理 → 点某个源的「编辑」
+        2. 「使用模板」选 bilibili
+        3. 点「保存修改」
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+      placeholder: 保存后下拉框应保持 bilibili，前台点该源标签应变成浅色主题
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      description: 如果有报错信息，**请原样完整粘贴**
+      placeholder: |
+        ⚠️ 未知操作：收到 action=xxx（映射表 16 项）
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志 / 截图 / 浏览器控制台
+      description: 后台提示、`php_errors.log`、浏览器 F12 控制台报错、页面截图都可以
+      render: shell
+
+  - type: textarea
+    id: checked
+    attributes:
+      label: 我已经排除的原因
+      description: 勾上你确认过的情况
+      value: |
+        - [ ] 相关文件已更新到最新版
+        - [ ] 已清空 runtime/cache 后重试
+        - [ ] 已确认 PHP 版本 ≥ 8.0 且装有 curl / pdo_sqlite
+        - [ ] 未提交任何密码或真实接口地址
+    validations:
+      required: true

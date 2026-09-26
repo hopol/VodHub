@@ -1,0 +1,6 @@
+{
+    "title": "Bilibili 风格",
+    "description": "参照 Bilibili 的浅色粉色主题，封面为宽图（16:9），适合横图接口",
+    "cover_mode": "wide",
+    "columns": 5
+}

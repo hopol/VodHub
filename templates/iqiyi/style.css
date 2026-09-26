@@ -1,0 +1,293 @@
+/*
+ * 爱奇艺风格样式
+ * 绿色主调 #22c55e，白色背景，网格卡片 + 悬浮遮罩，3:4 竖版封面
+ */
+
+:root {
+    --tm-primary: #22c55e;
+    --tm-primary-dark: #16a34a;
+    --tm-radius: 10px;
+    --tm-cover-ratio: 75%;        /* 3:4 */
+    --tm-columns: 5;
+    --tm-card-bg: #ffffff;
+    --tm-text: #1f2937;
+    --tm-text-2: #6b7280;
+    --tm-text-3: #9ca3af;
+    --tm-border: #e5e7eb;
+    --tm-hover: #f9fafb;
+    --tm-bg: #f5f5f5;
+}
+
+body {
+    background: var(--tm-bg);
+    color: var(--tm-text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+/* ============================= 顶栏 ============================= */
+
+.topbar {
+    background: #fff;
+    border-bottom: 1px solid var(--tm-border);
+    box-shadow: 0 2px 8px rgba(0,0,0,.04);
+}
+
+.brand { color: var(--tm-primary); font-size: 18px; font-weight: 700; }
+.brand-icon { background: var(--tm-primary); }
+.brand-text { color: var(--tm-primary); }
+
+.search-box {
+    background: var(--tm-hover);
+    border-color: transparent;
+    border-radius: 999px;
+}
+.search-box input { color: var(--tm-text); }
+.search-box input::placeholder { color: var(--tm-text-3); }
+.search-box button:hover { color: var(--tm-primary); }
+
+.topbar-nav a { color: var(--tm-text-2); }
+.topbar-nav a:hover { color: var(--tm-primary); background: transparent; }
+
+.source-tabs { border-top: 1px solid var(--tm-border); }
+.source-tab {
+    background: var(--tm-hover);
+    border-color: transparent;
+    color: var(--tm-text-2);
+}
+.source-tab.active { background: var(--tm-primary); color: #fff; border-color: var(--tm-primary); }
+
+/* ============================= 网格 + 悬浮遮罩 ============================= */
+
+.vod-grid {
+    grid-template-columns: repeat(var(--list-columns, var(--tm-columns, 5)), minmax(0, 1fr));
+    gap: 18px;
+}
+
+@media (max-width: 1280px) { .vod-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
+@media (max-width: 1024px) { .vod-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+@media (max-width: 768px)  { .vod-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 480px)  { .vod-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+.vod-card {
+    background: var(--tm-card-bg);
+    border: none;
+    border-radius: var(--tm-radius);
+    overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0,0,0,.08);
+    transition: transform .2s, box-shadow .2s;
+}
+
+.vod-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 8px 24px rgba(0,0,0,.12);
+}
+
+/* 封面：3:4 竖版 + 悬浮遮罩 */
+.cover {
+    aspect-ratio: var(--tm-cover-ratio, 3 / 4);      /* 后台"模板编辑"可调：封面高度比例 */
+    position: relative;
+    overflow: hidden;
+}
+
+.cover img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transition: transform .3s;
+}
+
+.vod-card:hover .cover img { transform: scale(1.05); }
+
+/* 遮罩（参考 iqiyi 源码） */
+.cover::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: rgba(0,0,0,.35);
+    opacity: 0;
+    transition: opacity .3s;
+    pointer-events: none;
+}
+.vod-card:hover .cover::after { opacity: 1; }
+
+/* 角标 */
+.badge-time {
+    top: auto;
+    bottom: 8px;
+    right: 8px;
+    left: auto;
+    background: rgba(0,0,0,.75);
+    color: #fff;
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    z-index: 2;
+}
+
+.badge-score {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    right: auto;
+    bottom: auto;          /* 必须重置，否则与 top 同时生效会被拉伸 */
+    background: var(--tm-primary);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 4px;
+    z-index: 2;
+    line-height: 1.2;
+    white-space: nowrap;
+}
+
+.vod-info { padding: 10px 12px 14px; }
+
+.vod-info h3 {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--tm-text);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    white-space: normal;
+    line-height: 1.4;
+}
+.vod-card:hover .vod-info h3 { color: var(--tm-primary); }
+
+.vod-sub { color: var(--tm-text-3); font-size: 12px; }
+
+/* ============================= 卡片容器 ============================= */
+
+.source-block,
+.detail-card,
+.play-side,
+.login-card {
+    background: var(--tm-card-bg);
+    border-color: transparent;
+    border-radius: var(--tm-radius);
+    box-shadow: 0 1px 3px rgba(0,0,0,.06);
+}
+
+/* ============================= 标签 / 按钮 ============================= */
+
+.chip {
+    background: var(--tm-hover);
+    border-color: transparent;
+    color: var(--tm-text-2);
+}
+.chip:hover { color: var(--tm-primary); }
+.chip.active { background: var(--tm-primary); color: #fff; }
+.chip-plain { background: var(--tm-hover); color: var(--tm-text-2); cursor: default; }
+.chip-score { background: rgba(34,197,94,.15); color: var(--tm-primary-dark); }
+
+.btn-primary { background: var(--tm-primary); color: #fff; }
+.btn-primary:hover { background: var(--tm-primary-dark); }
+.btn-ghost {
+    background: transparent;
+    border-color: var(--tm-border);
+    color: var(--tm-text-2);
+}
+.btn-ghost:hover { color: var(--tm-primary); border-color: var(--tm-primary); }
+
+/* ============================= 分类与列表页 ============================= */
+
+.type-chip {
+    background: var(--tm-card-bg);
+    border-color: var(--tm-border);
+    color: var(--tm-text-2);
+    border-radius: 999px;
+}
+.type-chip:hover {
+    background: rgba(34,197,94,.1);
+    border-color: var(--tm-primary);
+    color: var(--tm-primary);
+    transform: none;
+}
+
+.list-title { font-size: 20px; }
+.list-meta { color: var(--tm-text-3); }
+
+/* ============================= 分页 ============================= */
+
+.pg {
+    background: var(--tm-card-bg);
+    border-color: var(--tm-border);
+    color: var(--tm-text-2);
+    border-radius: 6px;
+}
+.pg:hover { border-color: var(--tm-primary); color: var(--tm-primary); }
+.pg.active { background: var(--tm-primary); border-color: var(--tm-primary); }
+
+/* ============================= 播放页 ============================= */
+
+.play-layout { grid-template-columns: 1fr 320px; }
+.detail-name { font-size: 22px; }
+.detail-desc p { color: var(--tm-text-2); }
+.info-list dt { color: var(--tm-text-3); }
+.info-list dd { color: var(--tm-text-2); }
+
+
+
+/* ===================== 手机端播放页（必带，否则基础断点被覆盖压掉） ===================== */
+@media (max-width: 860px) {
+    .play-layout {
+        grid-template-columns: 1fr;
+        gap: 14px;
+    }
+    .play-main,
+    .play-side { min-width: 0; max-width: 100%; }
+
+    /* 选集：自动换行，多行同时可见；仅当集数过多时固定高度纵向滚动。
+       注意：不能用 nowrap 横向滚动，用户必须左右拖动才能看全部，体验差。 */
+    .episodes-block { padding: 10px 12px; margin-bottom: 12px; }
+    .player-sources {
+        flex-wrap: wrap;
+        gap: 6px;
+        max-height: 200px;      /* 默认约可见 3 行 */
+        overflow-x: hidden;      /* 不允许横向拖动 */
+        overflow-y: auto;        /* 集数多时纵向滚动 */
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: thin;
+        padding: 2px 0;
+    }
+    .player-sources .chip { flex-shrink: 0; }
+
+    .detail-card,
+    .play-side { padding: 14px 12px; }
+
+    /* 信息表：dd 允许任意换行，长字段不撑破容器 */
+    .info-list {
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 8px 10px;
+    }
+    .info-list dd {
+        text-align: right;
+        word-break: break-all;
+        overflow-wrap: anywhere;
+        min-width: 0;
+    }
+
+    .player { aspect-ratio: 16 / 9; }
+    .player-empty { padding: 40px 16px; }
+}
+
+/* ============================= 登录 ============================= */
+
+.login-body { background: var(--tm-bg); }
+.login-card { background: var(--tm-card-bg); box-shadow: 0 4px 24px rgba(0,0,0,.08); }
+.login-card h1 { color: var(--tm-primary); }
+.field input {
+    background: var(--tm-hover);
+    border-color: var(--tm-border);
+    color: var(--tm-text);
+}
+.field input:focus { border-color: var(--tm-primary); background: #fff; }
+
+/* ============================= 页脚 ============================= */
+
+.footer {
+    background: var(--tm-card-bg);
+    border-top: 1px solid var(--tm-border);
+    color: var(--tm-text-3);
+}

@@ -1,0 +1,232 @@
+<?php
+/**
+ * 工具函数
+ */
+
+require_once __DIR__ . '/../config.php';
+
+if (!function_exists('h')) {
+    /** HTML 转义，防止 XSS */
+    function h(?string $s): string {
+        return htmlspecialchars((string) $s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    }
+}
+
+/** 标题清洗：去除人为断词符（如 "刚认.识" → "刚认识"） */
+function cleanTitle(?string $title): string {
+    $t = (string) $title;
+    $t = preg_replace('/[\s._\-]+/u', '', $t);
+    return trim($t);
+}
+
+/** 时长格式化："7" → "7分钟"，"95" → "1小时35分" */
+function formatDuration(?string $minutes): string {
+    $mins = intval((string) $minutes);
+    if ($mins <= 0) {
+        return '未知';
+    }
+    if ($mins < 60) {
+        return $mins . '分钟';
+    }
+    return sprintf('%d小时%02d分', intdiv($mins, 60), $mins % 60);
+}
+
+/** 数字简化：609 → 609，12345 → 1.2万 */
+function formatNumber(?int $n): string {
+    $n = intval((string) $n);
+    if ($n < 10000) {
+        return (string) $n;
+    }
+    return round($n / 10000, 1) . '万';
+}
+
+/**
+ * 解析 vod_play_url
+ * 格式："正片$https://xxx/index.m3u8"，多组以 # 或换行分隔
+ * 返回：[ ['label' => '正片', 'url' => 'https://...'], ... ]
+ */
+function parsePlayUrl(?string $playUrl): array {
+    $result = [];
+    $groups = preg_split('/[#\r\n]+/', (string) $playUrl);
+    foreach ($groups as $group) {
+        $group = trim($group);
+        if ($group === '') {
+            continue;
+        }
+        $pos = strpos($group, '$');
+        if ($pos === false) {
+            // 没有分隔符，整串当作地址
+            $result[] = ['label' => '播放', 'url' => $group];
+        } else {
+            $result[] = [
+                'label' => trim(substr($group, 0, $pos)),
+                'url'   => trim(substr($group, $pos + 1)),
+            ];
+        }
+    }
+    return $result;
+}
+
+/** 分页组件 */
+function renderPagination(int $page, int $pagecount, string $baseUrl): string {
+    if ($pagecount <= 1) {
+        return '';
+    }
+    $sep = str_contains($baseUrl, '?') ? '&' : '?';
+    $url = fn (int $p) => $baseUrl . $sep . 'page=' . $p;
+
+    $start = max(1, $page - 4);
+    $end = min($pagecount, $page + 4);
+    if ($end - $start < 8) {
+        $start = max(1, $end - 8);
+    }
+
+    $html = '<div class="pagination">';
+    if ($page > 1) {
+        $html .= '<a class="pg" href="' . h($url($page - 1)) . '">‹ 上一页</a>';
+    }
+    if ($start > 1) {
+        $html .= '<a class="pg" href="' . h($url(1)) . '">1</a>';
+        if ($start > 2) {
+            $html .= '<span class="pg-ellipsis">…</span>';
+        }
+    }
+    for ($i = $start; $i <= $end; $i++) {
+        $cls = $i === $page ? ' active' : '';
+        $html .= '<a class="pg' . $cls . '" href="' . h($url($i)) . '">' . $i . '</a>';
+    }
+    if ($end < $pagecount) {
+        if ($end < $pagecount - 1) {
+            $html .= '<span class="pg-ellipsis">…</span>';
+        }
+        $html .= '<a class="pg" href="' . h($url($pagecount)) . '">' . $pagecount . '</a>';
+    }
+    if ($page < $pagecount) {
+        $html .= '<a class="pg" href="' . h($url($page + 1)) . '">下一页 ›</a>';
+    }
+    return $html . '</div>';
+}
+
+/** 取封面图，空则返回占位图 */
+/**
+ * 取封面图地址
+ *
+ * 若该数据源开启了图片代理，则改走本地 img.php 转发（绕过上游防盗链）；
+ * 未开启则直接返回原始地址。
+ *
+ * @param string|null $pic      原始图片地址
+ * @param int         $sourceId 该条数据所属的数据源 id，0 表示不走代理
+ */
+function coverUrl(?string $pic, int $sourceId = 0): string {
+    $pic = trim((string) $pic);
+    if ($pic === '') {
+        return 'static/img/no-cover.svg';
+    }
+
+    if ($sourceId > 0) {
+        $stmt = db()->prepare('SELECT img_proxy FROM sources WHERE id = ?');
+        $stmt->execute([$sourceId]);
+        $row = $stmt->fetch();
+        if ($row && (int) $row['img_proxy'] === 1) {
+            return 'img.php?u=' . rawurlencode($pic) . '&s=' . $sourceId;
+        }
+    }
+    return $pic;
+}
+
+/** 按分类 ID 查分类名 */
+function typeName(array $types, int $typeId): string {
+    foreach ($types as $t) {
+        if (intval($t['type_id'] ?? -1) === $typeId) {
+            return (string) ($t['type_name'] ?? '');
+        }
+    }
+    return '全部';
+}
+
+/** 缓存目录占用大小（后台展示用） */
+function cacheSize(): string {
+    $bytes = 0;
+    foreach ((glob(CACHE_DIR . '/*') ?: []) as $f) {
+        if (is_file($f)) {
+            $bytes += filesize($f);
+        }
+    }
+    if ($bytes < 1024) {
+        return $bytes . ' B';
+    }
+    if ($bytes < 1048576) {
+        return round($bytes / 1024, 1) . ' KB';
+    }
+    return round($bytes / 1048576, 1) . ' MB';
+}
+
+/**
+ * 清洗图片代理域名白名单
+ * 允许逗号分隔；只保留形如 host 或 *.host 的片段，去掉协议、端口、路径。
+ * 返回小写、去重、逗号连接的字符串。
+ */
+function cleanHostList(string $raw): string {
+    $parts = preg_split('/[\s,;]+/', strtolower($raw)) ?: [];
+    $out = [];
+    foreach ($parts as $p) {
+        $p = trim($p, '. ');
+        if ($p === '') {
+            continue;
+        }
+        // 去掉误粘贴的协议与路径
+        $p = preg_replace('#^https?://#', '', $p);
+        $p = preg_replace('#^.*?/#', '', $p);
+        $p = preg_replace('#:\d+$#', '', $p);  // 去端口
+        $p = trim($p, '. ');
+        if ($p === '' || !preg_match('/^[a-z0-9.\-]+$/', $p)) {
+            continue;
+        }
+        if (!in_array($p, $out, true)) {
+            $out[] = $p;
+        }
+    }
+    return implode(',', $out);
+}
+
+/**
+ * 自动学习图片域名：把实际代理到的域名追加进数据源的 img_hosts 白名单。
+ *
+ * 用途：很多人并不知道图片域名是什么，代理跑通后自动记录，
+ * 后台就能看到"这个源实际用的图片域名"，也能切换成白名单加严模式。
+ *
+ * @return bool 是否真的写入了新域名
+ */
+function learnImgHost(int $sourceId, string $host): bool {
+    $host = strtolower(trim($host, '. '));
+    if ($sourceId <= 0 || $host === '' || !preg_match('/^[a-z0-9.\-]+$/', $host)) {
+        return false;
+    }
+    // 已在白名单（含通配）则不重复写
+    $row = getSource($sourceId);
+    if (!$row) {
+        return false;
+    }
+    $existing = array_filter(array_map('trim', explode(',', strtolower((string) $row['img_hosts']))));
+    foreach ($existing as $pattern) {
+        $pattern = trim($pattern, '. ');
+        if ($pattern === '') {
+            continue;
+        }
+        if ($host === $pattern || str_ends_with($host, '.' . $pattern)) {
+            return false;  // 已覆盖，无需追加
+        }
+    }
+    // 追加新域名（同时带上主域，让同源子域名也覆盖）
+    $parts = explode('.', $host);
+    if (count($parts) >= 3) {
+        $suffix = implode('.', array_slice($parts, -2));
+        $existing[] = $suffix;      // 如 example.com
+    }
+    $existing[] = $host;            // 如 img.example.com
+    $existing = array_values(array_unique($existing));
+
+    $stmt = db()->prepare('UPDATE sources SET img_hosts = ? WHERE id = ?');
+    $stmt->execute([implode(',', $existing), $sourceId]);
+    return true;
+}
