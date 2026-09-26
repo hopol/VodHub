@@ -30,6 +30,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $GLOBALS['admin_login_error'] = '表单已过期，请重试';
         } elseif (password_verify($pwd, setting('admin_password'))) {
             $_SESSION[SESS_ADMIN_OK] = true;
+            // 记录登录时的密码指纹：改密码 / 重装后，旧 cookie 会话立即失效
+            $_SESSION['admin_fp'] = (string) setting('admin_password');
             session_regenerate_id(true);
             header('Location: admin.php');
             exit;
@@ -57,6 +59,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $msg = adminHandlePost();
     }
 }
+
+// ---------------------------------------------------------------- 鉴权
+// 提示必须在 requireAdmin() 之前设置：未登录时它会直接渲染登录页并退出。
+if (isset($_GET['logout'])) {
+    $GLOBALS['admin_login_notice'] = '✅ 已安全退出后台登录，请重新输入管理密码';
+}
+
+// GET 与 POST 一律需要登录。
+// 【严重】此前 requireAdmin() 只写在上面的 POST 分支内，GET 直接落到渲染段，
+// 导致任何人打开 admin.php 都能看到完整后台（含全部数据源接口地址、站点设置），
+// 且"退出"重定向回来后又渲染出整页，表现为点了没反应。
+requireAdmin();
 
 // ---------------------------------------------------------------- 渲染
 $allSources = getSources(false);

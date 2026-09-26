@@ -15,6 +15,34 @@
 
 ---
 
+## [1.0.1] - 2026-09-26
+
+### 安全
+
+- **[高危] 后台 GET 请求缺少鉴权**：`requireAdmin()` 此前只写在 `admin.php` 的 POST
+  分支内，`GET admin.php` 直接进入渲染段。任何人打开后台地址即可**无密码查看完整
+  管理界面**，包括全部数据源接口地址（可能含 API 密钥）、分组、站点与模板设置。
+  现已对 GET 与 POST 一律拦截。
+- **会话绑定管理密码指纹**：登录时记录当时的密码哈希，`isAdminOk()` 每次校验其是否
+  仍与当前密码一致。**重新安装**或**修改管理密码**后，浏览器残留的旧 cookie 会话立即
+  失效，不再出现"重装后免密进入后台"。
+
+### 修复
+
+- **退出后台无任何反馈**：因上述 GET 鉴权缺失，`logout.php` 清除会话并重定向回
+  `admin.php` 后又被完整渲染，表现为"点了退出没反应"。现已跳转登录页并显示
+  「✅ 已安全退出后台登录」提示。
+- **后台退出会误清前台访问密码会话**：`logout.php?admin=1` 原先同时清除
+  `SESS_ACCESS_OK`，导致启用访问密码时，退出后台会让前台也需重新登录。现改为前后台
+  各清各的会话。
+- 退出后换发会话 ID（`session_regenerate_id`），旧 cookie 立即失效，防会话固定。
+
+### 变更
+
+- 登录页支持展示中性提示（区分于红色错误提示）。
+
+---
+
 ## [1.0.0] - 2026-09-26
 
 首个公开发布版本。
@@ -76,5 +104,6 @@
 
 ---
 
-[Unreleased]: https://github.com/hopol/VodHub/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/hopol/VodHub/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/hopol/VodHub/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/hopol/VodHub/releases/tag/v1.0.0

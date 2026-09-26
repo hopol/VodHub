@@ -32,10 +32,26 @@ function requireAccess(): void {
     exit;
 }
 
-/** 后台是否已登录 */
+/**
+ * 后台是否已登录
+ *
+ * 除标记外还校验「会话指纹」= 登录时的管理密码哈希。
+ * 这样在以下情况会话会立即失效，避免 cookie 残留导致"重装后免密进后台"：
+ *   - 重新安装（数据库重建、管理密码哈希变化）
+ *   - 后台修改了管理密码（所有旧会话同时作废）
+ */
 function isAdminOk(): bool {
     sessionStart();
-    return !empty($_SESSION[SESS_ADMIN_OK]);
+    if (empty($_SESSION[SESS_ADMIN_OK])) {
+        return false;
+    }
+    $fp = (string) ($_SESSION['admin_fp'] ?? '');
+    if ($fp === '' || !hash_equals((string) setting('admin_password'), $fp)) {
+        // 指纹不匹配：密码已变更或这是旧安装残留的会话，直接作废
+        unset($_SESSION[SESS_ADMIN_OK], $_SESSION['admin_fp']);
+        return false;
+    }
+    return true;
 }
 
 /** 后台访问拦截：未登录则显示登录表单 */
@@ -65,7 +81,8 @@ function verifyCsrf(?string $token): bool {
 
 /** 后台登录表单（未登录时直接渲染，不再额外建文件） */
 function renderAdminLogin(): void {
-    $error = $GLOBALS['admin_login_error'] ?? '';
+    $error  = $GLOBALS['admin_login_error'] ?? '';
+    $notice = $GLOBALS['admin_login_notice'] ?? '';
     ?>
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -80,6 +97,8 @@ function renderAdminLogin(): void {
         <h1>后台管理</h1>
         <?php if ($error !== ''): ?>
             <div class="alert alert-error"><?= h($error) ?></div>
+        <?php elseif ($notice !== ''): ?>
+            <div class="alert"><?= h($notice) ?></div>
         <?php endif; ?>
         <label class="field">
             <span>管理密码</span>
