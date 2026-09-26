@@ -16,6 +16,7 @@ require_once __DIR__ . '/auth.php';
 require_once __DIR__ . '/client.php';
 require_once __DIR__ . '/functions.php';
 require_once __DIR__ . '/template.php';
+require_once __DIR__ . '/enrich.php';
 
 /** action → 处理函数映射表 */
 $_ADMIN_ACTION_MAP = [
@@ -186,6 +187,9 @@ function adminActionSiteSettings(array $post): string {
         if ($cols > 8) { $cols = 8; }
         setSetting('list_columns', (string) $cols);
 
+        // 字段智能归一化开关（未提交的表单按关闭处理，与其他布尔项一致）
+        setSetting('enrich_enabled', intval($post['enrich_enabled'] ?? 0) === 1 ? '1' : '0');
+
         return $cols > 0
             ? '✅ 站点设置已保存（列表列数：' . $cols . '）'
             : '✅ 站点设置已保存（列表列数：跟随模板默认）';
@@ -336,5 +340,7 @@ function adminActionClearCache(array $post): string {
         foreach ((glob(CACHE_DIR . '/*.json') ?: []) as $f) {
             if (@unlink($f)) { $n++; }
         }
-        return '✅ 已清空全部缓存（' . $n . ' 个文件）';
+        // 字段归一化结果也存在 SQLite 里，属于缓存，一并清掉
+        enrichClearCache();
+        return '✅ 已清空全部缓存（' . $n . ' 个接口文件 + 归一化记录）';
 }

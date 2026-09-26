@@ -15,6 +15,9 @@
 require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/functions.php';
+// 片段（partials/*.php）与模板页都会用到字段层的解析函数，
+// 这里统一引入，避免每个模板各自 require 一遍、漏一个就是白屏。
+require_once __DIR__ . '/fields.php';
 
 /** 模板根目录 */
 function tplRoot(): string {

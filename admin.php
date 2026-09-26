@@ -15,6 +15,7 @@ require_once __DIR__ . '/includes/auth.php';
 require_once __DIR__ . '/includes/client.php';
 require_once __DIR__ . '/includes/functions.php';
 require_once __DIR__ . '/includes/template.php';
+require_once __DIR__ . '/includes/enrich.php';
 require_once __DIR__ . '/includes/admin-actions.php';
 
 sessionStart();
@@ -79,6 +80,7 @@ $accessEnabled = setting('access_enabled') === '1';
 $siteTitle = setting('site_title', APP_NAME);
 $templates = listTemplates();
 $siteTemplate = setting('site_template', 'default');
+$enrichEnabled = setting('enrich_enabled', '1') === '1';
 $editTpl = trim((string) ($_GET['tpl'] ?? $siteTemplate));
 if (!tplExists($editTpl)) {
     $editTpl = 'default';
@@ -564,13 +566,25 @@ $editingGroup = $editGid > 0 ? getGroup($editGid) : null;
                     手机端始终自适应，不受此设置影响。
                 </small>
             </label>
+            <label class="field field-check">
+                <input type="checkbox" name="enrich_enabled" value="1" <?= $enrichEnabled ? 'checked' : '' ?>>
+                <span>播放页字段智能归一化（TypeSafe）</span>
+            </label>
+            <label class="field field-wide">
+                <small class="muted">
+                    把地区/语言/类型/更新状态这类「同一份数据有多种写法」的字段统一成规范值，
+                    并判定内容分级。首次打开某影片时请求一次（约 1 秒），结果缓存 30 天；
+                    关闭后全部按上游原始值展示，页面照常工作。
+                </small>
+            </label>
             <input type="hidden" name="csrf" value="<?= csrfToken() ?>">
             <button class="btn btn-primary" type="submit">保存</button>
         </form>
 
         <h3 class="admin-subtitle">🧹 缓存管理</h3>
         <p class="muted">
-            当前缓存占用：<b><?= h(cacheSize()) ?></b>。
+            当前缓存占用：<b><?= h(cacheSize()) ?></b>；
+            字段归一化记录 <b><?= h(enrichCacheCount()) ?></b> 条。
             列表/详情缓存 <?= intval(CACHE_TTL / 60) ?> 分钟；
             分类数据走长缓存 <?= intval(CACHE_TTL_TYPE / 3600) ?> 小时（分类几乎不变，减少上游请求）。
             上游故障时会自动降级使用旧缓存。

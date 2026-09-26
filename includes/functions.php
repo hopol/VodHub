@@ -19,14 +19,47 @@ function cleanTitle(?string $title): string {
     return trim($t);
 }
 
-/** 时长格式化："7" → "7分钟"，"95" → "1小时35分" */
+/**
+ * 时长 → 分钟数。
+ *
+ * 兼容 `45`、`45分钟`、`1小时30分`、`1h30m`、`95 分钟`。
+ * 纯 `intval()` 会把 `1小时30分` 读成 1 分钟，所以要先认单位。
+ */
+function parseDuration(?string $s): int {
+    $s = trim((string) $s);
+    if ($s === '') {
+        return 0;
+    }
+    // 显式小时 + 分钟
+    if (preg_match('/(\d+)\s*(?:小时|時|h)\s*(?:(\d+)\s*(?:分|分钟|m))?/iu', $s, $m)) {
+        return intval($m[1]) * 60 + intval($m[2] ?? 0);
+    }
+    // 显式分钟
+    if (preg_match('/(\d+)\s*(?:分钟|分鐘|分|min)/iu', $s, $m)) {
+        return intval($m[1]);
+    }
+    // 纯数字：当作分钟
+    if (preg_match('/^\d+$/', $s)) {
+        return intval($s);
+    }
+    return 0;
+}
+
+/**
+ * 时长文案。查不到返回空串（调用方自行决定是否渲染），
+ * 不再返回「未知」—— 否则列表页会满屏占位角标。
+ */
 function formatDuration(?string $minutes): string {
-    $mins = intval((string) $minutes);
+    $mins = parseDuration($minutes);
     if ($mins <= 0) {
-        return '未知';
+        return '';
     }
     if ($mins < 60) {
         return $mins . '分钟';
+    }
+    // 整点小时不要写成「1小时00分」
+    if ($mins % 60 === 0) {
+        return intdiv($mins, 60) . '小时';
     }
     return sprintf('%d小时%02d分', intdiv($mins, 60), $mins % 60);
 }

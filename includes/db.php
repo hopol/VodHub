@@ -91,6 +91,20 @@ function dbInit(PDO $pdo): void {
         setSetting('schema_version', '4');
     }
 
+    // v5：富化缓存（TypeSafe System One 的归一化结果，按 数据源+影片 落库）
+    // 单条元数据 30 天不变，所以按 vod_id 缓存而不是每次重算；
+    // 空 data 是负缓存（上次调用失败），由 enrich.php 按短 TTL 自愈。
+    if ((int) setting('schema_version') < 5) {
+        $pdo->exec('CREATE TABLE IF NOT EXISTS enrich (
+            source_id  INTEGER NOT NULL,
+            vod_id     INTEGER NOT NULL,
+            data       TEXT    NOT NULL DEFAULT "",
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY (source_id, vod_id)
+        )');
+        setSetting('schema_version', '5');
+    }
+
     // 默认设置：不启用访问密码
     $defaults = [
         'access_enabled'   => '0',                       // 0=无需密码 1=需要密码
@@ -103,6 +117,10 @@ function dbInit(PDO $pdo): void {
         'player_autoplay'  => '1',
         'site_template'    => 'default',                 // 站点默认模板
         'list_columns'     => '0',                       // 列表列数（0 = 跟随模板默认）
+        'enrich_enabled'    => '1',                       // 播放页字段归一化（TypeSafe），0 = 关闭
+        'enrich_base_url'   => 'https://opencode.ai/zen/v1/systemone',
+        'enrich_model'      => 'jev-1.13-free',
+        'enrich_api_key'    => 'public',
     ];
     foreach ($defaults as $k => $v) {
         $stmt = $pdo->prepare('INSERT INTO settings (key, value) VALUES (?, ?)

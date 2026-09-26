@@ -577,6 +577,102 @@ code {
 .info-list dt { color: var(--text-3); }
 .info-list dd { margin: 0; text-align: right; word-break: break-all; }
 
+
+/* ---------- 播放页 · 字段扩展（别名 / 演职员 / 内容提示） ---------- */
+
+/* 副标题：`vod_sub`（61% 填充）是别名集，与片名不同时单独占一行 */
+.detail-sub {
+    margin: -6px 0 14px;
+    font-size: 14px;
+    color: var(--text-3);
+    line-height: 1.6;
+    word-break: break-word;
+}
+
+/* 内容提示：仅当模型判定为成人向时出现（includes/enrich.php 的 is_adult）。
+   用 .chip.chip-warn 提高优先级，避免被各主题自己的 .chip 规则盖掉。 */
+.chip.chip-warn {
+    background: rgba(224, 86, 86, .16);
+    border-color: rgba(224, 86, 86, .55);
+    color: #ff9b9b;
+}
+
+.credits {
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+}
+
+.credits strong { display: block; margin-bottom: 8px; font-size: 14px; }
+
+.credit-row {
+    margin: 0 0 6px;
+    font-size: 14px;
+    color: var(--text-2);
+    line-height: 1.7;
+    word-break: break-word;
+}
+
+.credit-k {
+    display: inline-block;
+    min-width: 44px;
+    color: var(--text-3);
+}
+
+.credit-more summary {
+    cursor: pointer;
+    font-size: 14px;
+    color: var(--primary);
+    list-style: none;
+}
+.credit-more summary::-webkit-details-marker { display: none; }
+.credit-more[open] summary { margin-bottom: 6px; }
+.credit-more p { margin: 0; font-size: 14px; color: var(--text-2); line-height: 1.8; }
+
+/* 侧栏里可点的外链（豆瓣条目） */
+.info-list a { color: var(--primary); text-decoration: none; }
+.info-list a:hover { text-decoration: underline; }
+
+/* ---------- 列表页 · 本地筛选 ---------- */
+
+/* 上游 wd 只匹配 vod_name（实测别名/拼音/演员均搜不到），
+   这个框在「当前这一页」内按 data-s 串匹配，把那些字段真正用起来。 */
+.list-filter {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 14px;
+}
+
+.list-filter input {
+    flex: 1;
+    min-width: 220px;
+    padding: 9px 14px;
+    font-size: 14px;
+    color: var(--text);
+    background: var(--bg-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    outline: none;
+}
+
+.list-filter input:focus { border-color: var(--primary); }
+.list-filter input::placeholder { color: var(--text-3); }
+
+.filter-count { font-size: 13px; color: var(--text-3); white-space: nowrap; }
+
+.filter-empty {
+    display: none;
+    text-align: center;
+    color: var(--text-3);
+    font-size: 14px;
+    padding: 30px 0 10px;
+}
+.filter-empty.show { display: block; }
+
+/* 被筛掉的卡片直接不占位（grid 子项必须显式 display:none） */
+.vod-card[hidden] { display: none; }
 /* ============================= 登录页 ============================= */
 
 .login-body {

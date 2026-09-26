@@ -21,6 +21,14 @@ require_once __DIR__ . '/header.php';
             </a>
         <?php endforeach; ?>
     </div>
+
+    <?php if ($list): ?>
+    <div class="list-filter">
+        <input type="search" id="listFilter" autocomplete="off"
+               placeholder="本页筛选：片名 / 别名 / 拼音 / 演员 / 导演 / 标签">
+        <span class="filter-count" id="filterCount"></span>
+    </div>
+    <?php endif; ?>
 </div>
 
 <?php if (!$list): ?>

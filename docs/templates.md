@@ -55,7 +55,9 @@ templates/
     ├── player_script.php       # 播放器 JS 片段
     ├── style.css               # 模板专属样式
     └── partials/
-        └── vod_grid.php        # 卡片网格片段
+        ├── vod_grid.php        # 卡片网格片段（列表页 / 搜索页）
+        ├── vod_meta.php        # 播放页 · 信息 chips
+        └── vod_side.php        # 播放页 · 侧栏影片信息
 ```
 
 ---
@@ -135,20 +137,35 @@ CI 会检查下面这些文件，缺一个就挂：
 | `$pic` | 封面（**已处理过代理**，直接用） |
 | `$desc` | 简介 |
 | `$playUrls` | 播放地址数组：`[['label' => '正片', 'url' => 'https://...']]` |
+| `$meta` | `buildMeta()` 的返回值：别名、地区、语言、上映日期、导演/编剧/主演、集数、豆瓣链接、收录时间、播放来源等。**空字段就是空串**，按「有值才渲染」处理 |
+| `$playCount` | `vod_play_url` 实际解析出的集数（算「共 N 集」用） |
 | `$types` / `$typeName` | 分类 |
 | `$autoplay` | 是否自动播放 |
 
 ### 引入片段
 
 ```php
-<?php tplPartial('vod_grid'); ?>
-```
-
-片段在独立作用域执行，需要的变量要**显式传**：
-
-```php
 <?php tplPartial('vod_grid', $tplName, ['list' => $list, 'sourceId' => $sourceId]); ?>
 ```
+
+片段在独立作用域执行，需要的变量要**显式传**；模板名不传则用当前模板。
+片段缺失时会**回退到 `default/` 下的同名片段**，所以新模板漏写不会白屏。
+
+现有的三个片段：
+
+| 片段 | 页面 | 需要传入的变量 |
+|------|------|--------------|
+| `partials/vod_grid.php` | 列表页、搜索页 | `list`、`sourceId` |
+| `partials/vod_meta.php` | 播放页 · 信息 chips | `meta`、`source`、`sourceId` |
+| `partials/vod_side.php` | 播放页 · 侧栏信息 | `meta`、`detail`、`source`、`sourceId`、`playCount` |
+
+`$meta` 由 `buildMeta()`（`includes/fields.php`）在控制器里算好，**模板不要自己拼字段** ——
+解析规则（HTML 实体解码、`2026-09-16(美国)` 拆分、时长认单位、地区/语言归一…）都集中在
+那里，模板只负责排版。
+
+> 这三个片段是「字段显示在哪儿」的唯一出口。5 套模板的 `play.php` 原本是逐字节相同的
+> 拷贝，字段一多就得改 5 遍、漏一个就出现「有的模板显示有的不显示」，所以抽成了片段。
+> **想改播放页展示哪些字段，改片段，不要改 5 份 `play.php`。**
 
 ### 转义
 

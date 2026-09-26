@@ -1,12 +1,25 @@
 <?php
 /**
  * default 模板 - 播放页
- * 变量：$source, $sourceId, $vodId, $detail, $name, $pic, $playUrls,
- *       $types, $typeName, $desc, $autoplay
+ * 变量：$source, $sourceId, $vodId, $detail, $name, $pic, $playUrls, $playCount,
+ *       $types, $typeName, $desc, $meta, $autoplay
+ *
+ * 字段渲染拆到两个共享片段（全站 5 套模板共用，见片段内注释）：
+ *   - partials/vod_meta.php  信息 chips
+ *   - partials/vod_side.php  侧栏影片信息
+ * 演职员与简介留在本文件，因为它们决定主栏排版。
  */
 require_once __DIR__ . '/header.php';
 ?>
 
+<?php if (!$detail): ?>
+    <div class="empty">
+        <div class="empty-icon">🕳️</div>
+        <h2><?= h($name) ?></h2>
+        <p>影片不存在，或该数据源已停用。</p>
+        <a class="btn btn-primary" href="index.php">返回首页</a>
+    </div>
+<?php else: ?>
 <div class="play-layout">
     <div class="play-main">
         <div class="player-wrap" id="playerWrap">
@@ -33,49 +46,71 @@ require_once __DIR__ . '/header.php';
 
         <div class="detail-card">
             <h1 class="detail-name"><?= h($name) ?></h1>
-            <div class="detail-meta">
-                <span class="chip chip-plain"><?= h($typeName) ?></span>
-                <?php if (!empty($detail['vod_year'])): ?>
-                    <span class="chip chip-plain"><?= h($detail['vod_year']) ?></span>
-                <?php endif; ?>
-                <?php if (!empty($detail['vod_area'])): ?>
-                    <span class="chip chip-plain"><?= h($detail['vod_area']) ?></span>
-                <?php endif; ?>
-                <span class="chip chip-plain"><?= h(formatDuration($detail['vod_duration'] ?? '')) ?></span>
-                <?php if (floatval($detail['vod_score'] ?? 0) > 0): ?>
-                    <span class="chip chip-score">评分 <?= h($detail['vod_score']) ?></span>
-                <?php endif; ?>
-                <span class="chip chip-plain">播放 <?= h(formatNumber(intval($detail['vod_hits'] ?? 0))) ?></span>
-            </div>
 
-            <div class="detail-desc">
-                <strong>简介</strong>
-                <p><?= h($desc) ?></p>
+            <?php if (($meta['alias'] ?? '') !== '' && $meta['alias'] !== $name): ?>
+                <p class="detail-sub"><?= h($meta['alias']) ?></p>
+            <?php endif; ?>
+
+            <?php tplPartial('vod_meta', $tplName, [
+                'meta' => $meta, 'source' => $source, 'sourceId' => $sourceId,
+            ]); ?>
+
+            <?php if ($desc !== ''): ?>
+                <div class="detail-desc">
+                    <strong>简介</strong>
+                    <p><?= h($desc) ?></p>
+                </div>
+            <?php endif; ?>
+
+            <?php
+            // 演职员：`vod_actor` 79% 填充但动辄十几人，`vod_director` / `vod_writer`
+            // 分别 58% / 41%。主演默认折叠，避免把简介挤出首屏。
+            $actors   = $meta['actors'] ?? [];
+            $director = $meta['director'] ?? '';
+            $writer   = $meta['writer'] ?? '';
+            ?>
+            <?php if ($director !== '' || $writer !== '' || $actors): ?>
+            <div class="credits">
+                <strong>演职员</strong>
+                <?php if ($director !== ''): ?>
+                    <p class="credit-row"><span class="credit-k">导演</span><?= h($director) ?></p>
+                <?php endif; ?>
+                <?php if ($writer !== ''): ?>
+                    <p class="credit-row"><span class="credit-k">编剧</span><?= h($writer) ?></p>
+                <?php endif; ?>
+                <?php if ($actors): ?>
+                    <details class="credit-more">
+                        <summary>主演（<?= count($actors) ?> 人）</summary>
+                        <p><?= h(implode('、', $actors)) ?></p>
+                    </details>
+                <?php endif; ?>
             </div>
+            <?php endif; ?>
 
             <div class="detail-actions">
                 <button class="btn btn-ghost btn-sm" id="btnFavorite">⭐ 收藏</button>
-                <a class="btn btn-ghost btn-sm"
-                   href="list.php?source=<?= $sourceId ?>&type=<?= intval($detail['type_id'] ?? 0) ?>">
-                    更多同分类 →
-                </a>
+                <?php if (($meta['type_id'] ?? 0) > 0): ?>
+                    <a class="btn btn-ghost btn-sm"
+                       href="list.php?source=<?= $sourceId ?>&type=<?= intval($meta['type_id']) ?>">
+                        更多同分类 →
+                    </a>
+                <?php endif; ?>
+                <?php if (($meta['type_id_1'] ?? 0) > 0 && $meta['type_id_1'] !== ($meta['type_id'] ?? 0)): ?>
+                    <a class="btn btn-ghost btn-sm"
+                       href="list.php?source=<?= $sourceId ?>&type=<?= intval($meta['type_id_1']) ?>">
+                        <?= h($meta['type_name_1'] !== '' ? $meta['type_name_1'] : '更多同大类') ?> →
+                    </a>
+                <?php endif; ?>
             </div>
         </div>
     </div>
 
-    <aside class="play-side">
-        <h2 class="side-title">影片信息</h2>
-        <dl class="info-list">
-            <dt>编号</dt><dd><?= h($detail['vod_id'] ?? '') ?></dd>
-            <dt>分类</dt><dd><?= h(($detail['vod_class'] ?? '') ?: $typeName) ?></dd>
-            <dt>地区</dt><dd><?= h(($detail['vod_area'] ?? '') ?: '未知') ?></dd>
-            <dt>语言</dt><dd><?= h(($detail['vod_lang'] ?? '') ?: '未知') ?></dd>
-            <dt>清晰度</dt><dd><?= h(($detail['vod_remarks'] ?? '') ?: ($detail['vod_version'] ?? '') ?: '未知') ?></dd>
-            <dt>添加时间</dt><dd><?= h($detail['vod_time'] ?? '未知') ?></dd>
-            <dt>数据源</dt><dd><?= h($source['name'] ?? '未知') ?></dd>
-        </dl>
-    </aside>
+    <?php tplPartial('vod_side', $tplName, [
+        'meta' => $meta, 'detail' => $detail, 'source' => $source,
+        'sourceId' => $sourceId, 'playCount' => $playCount,
+    ]); ?>
 </div>
+<?php endif; ?>
 
 <?php require_once __DIR__ . '/footer.php'; ?>
 

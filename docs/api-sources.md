@@ -106,31 +106,88 @@ curl "你的地址?ac=detail&ids=1" | head -c 500
 
 ## 使用了哪些字段
 
-### 列表卡片
+上游单条记录有 **83 个字段**，但填充率从 100% 到全 0 不等。程序按「**有值才渲染**」
+消费它们 —— 不渲染「未知」占位，字段缺失时那一行自然消失。
+
+各字段的实测填充率来自对某个采集源的抓取统计（83 个字段里，`vod_id` / `vod_area` /
+`vod_year` 等 17 个 100% 填充，`vod_actor` 79%、`vod_pubdate` 81%，而 `vod_hits` 系列全为 0）。
+**不同源差异很大**，所以程序一律「有值才渲染」。
+字段解析逻辑集中在 `includes/fields.php`，归一化判断在 `includes/enrich.php`。
+
+### 列表卡片 / 搜索结果（`partials/vod_grid.php`）
 
 | 字段 | 用途 |
 |------|------|
 | `vod_id` | 拼播放链接（必需） |
 | `vod_name` | 卡片标题 |
 | `vod_pic` | 封面图 |
-| `vod_remarks` | 「更新至第 X 集」类备注 |
-| `vod_score` | 评分，>0 才显示角标 |
-| `vod_duration` | 时长 |
-| `vod_class` / `type_name` | 分类名 |
-| `vod_year` | 年份 |
+| `vod_status` | 为 `0` 表示上游已下架，不出卡片 |
+| `vod_remarks` | 角标首选（100% 填充，如「更新至第 08 集」） |
+| `vod_state` | 角标次选（23%，如「正片」） |
+| `vod_duration` | 角标兜底（22%），认「45分钟」「1小时30分」 |
+| `vod_score` / `vod_douban_score` / `vod_score_all` + `vod_score_num` | 评分角标，按此顺序兜底：`vod_score` → `vod_douban_score` → `vod_score_all ÷ vod_score_num`（后两者填充互补） |
+| `vod_class` / `type_name` / `vod_year` | 副标题 |
+| `vod_sub` | 别名，接在副标题后 |
+| `vod_en` `vod_letter` `vod_actor` `vod_director` `vod_writer` `vod_tag` | 拼进 `data-s`，供本页筛选（见下） |
 
-### 播放页详情
+### 本页筛选（`static/app.js`）
 
-| 字段 | 用途 |
+顶栏搜索走上游的 `wd` 参数，**而 `wd` 只匹配 `vod_name`** —— 实测
+`wd=<拼音>`、`wd=<别名>` 都返回 0 条。所以列表页/搜索页额外提供一个本页筛选框，
+按服务端预拼的 `data-s` 串做子串匹配，让这些字段在站内真正可用：
+
+> 片名 + 别名 + 拼音 + 首字母 + 演员 + 导演 + 编剧 + 类型 + 标签 + 分类名
+
+匹配是**纯前端**的，只作用于当前这一页已加载的卡片，不发额外请求。
+
+### 播放页（`partials/vod_meta.php` + `partials/vod_side.php`）
+
+5 套模板共用这两个片段（`play.php` 原本是逐字节相同的拷贝，字段一多就得改 5 遍）。
+
+| 区块 | 字段 |
 |------|------|
-| `vod_id` | 主键 |
-| `vod_name` | 标题 |
-| `vod_pic` | 封面 |
-| `vod_remarks` | 更新状态 |
-| `vod_year` / `vod_area` / `vod_lang` / `vod_class` / `vod_version` | 信息表 |
-| `vod_score` / `vod_hits` | 评分、热度 |
-| `vod_duration` | 时长 |
-| `vod_time` / `vod_content` | 更新时间、简介 |
+| 信息 chips | `type_name` `type_id_1`（父分类，可点回上级）`vod_year` `vod_area` `vod_lang` `vod_remarks` `vod_state` `vod_duration` `vod_score` `vod_hits` `vod_status` |
+| 副标题 | `vod_sub`（别名集） |
+| 简介 | `vod_content` 与 `vod_blurb` 择优（取清洗后更长的那份），HTML 全部压成纯文本 |
+| 演职员 | `vod_director` `vod_writer` `vod_actor`（HTML 实体解码后拆分，主演默认折叠） |
+| 侧栏信息 | `vod_id` `vod_sub` `vod_class` `type_id_1` `vod_area` `vod_lang` `vod_pubdate`（`2026-09-16(美国)` 拆成日期 + 国家）`vod_duration` `vod_total` `vod_director` `vod_writer` `vod_state` `vod_remarks` `vod_score` `vod_douban_id` / `vod_douban_score`（豆瓣外链）`vod_en` / `vod_letter` `vod_time_add`（相对时间）`vod_play_from` / `vod_play_server` |
+
+`vod_total`（总集数）与 `vod_play_url` 实际解析出的集数一起算：
+两者常对不上（前者是全剧，后者只有已更新的），所以显示 `共 N 集（已更新 M）`。
+
+chips 与侧栏还各有一行 `vod_version`（版本/清晰度，实测取值如「TV版」，本源 5/200 填充）。
+
+### 智能归一化（可关）
+
+同一份数据在上游有多种写法：实测 `vod_area` 里「中国大陆」48 次、「大陆」43 次，
+`vod_lang` 里「国语」57 次、「汉语普通话」47 次。归一化分两层：
+
+1. **规则层**（`includes/fields.php`）—— 精确映射 + 正则，**不联网**。
+   实测本源 200 条记录中地区 200 条、语言 198 条由规则直接命中。
+2. **模型层**（`includes/enrich.php`，TypeSafe System One）—— 只补规则答不上来的部分：
+   - 地区/语言的长尾与残缺值（如「汉语普通话,英语,**法**」）
+   - 由 `vod_class` + `vod_tag` 归出的主类型（`vod_tag` 是分词后的 token 汤，规则无法解读）
+   - 更新状态的非规整句式（如「HD」「HD中字」）
+   - 内容分级（成人内容判定）
+
+调用策略：**只在播放页触发、异步**、同一条影片的多个判断合并进**一次**请求并行求值，
+结果按 `(数据源, vod_id)` 落库缓存 30 天；失败写 10 分钟负缓存并保持原始字段。
+关闭开关见后台「站点与维护 → 播放页字段智能归一化」。
+
+> 归一化只改**展示**，不改存储，也不改上游返回。关掉开关后页面完全按原始值渲染。
+
+### 明确不用的字段
+
+| 字段 | 不用的原因 |
+|------|-----------|
+| `vod_hits`（含 `_day` / `_week` / `_month`）、`vod_up` / `vod_down` | 200 条里仅 1~2 条非零，展示只会是「播放 0」/空点赞，纯噪音 |
+| `vod_isend` | 语义与本源数据矛盾（`197 条为 0`，但 `remarks` 里有 31 条「已完结」；而 `=1` 的 3 条 `remarks` 却写着「更新至第715集」）。**宁可不用，也不能显示错的状态** |
+| `vod_down_from` / `vod_down_server` / `vod_down_*` / `vod_down_url` | 值恒为 `no`，且本站不提供下载 |
+| `vod_plot` / `vod_plot_name` / `vod_plot_detail` | 本源全空 |
+| `vod_pwd*` `vod_jumpurl` `vod_reurl` `vod_rel_*` | 密码保护、外跳与关联推荐，本站不提供 |
+| `vod_pic_thumb` `vod_pic_slide` `vod_pic_screenshot` | 本源全空，封面只用 `vod_pic` |
+| `group_id` `vod_color` `vod_level` `vod_points*` 等 | CMS 后台自用字段，与前台展示无关 |
+| `vod_letter` | **不单独做 A–Z 索引条**（上游无该参数，只能过滤当前页）；已并入 `data-s` 参与筛选 |
 
 ### 播放地址
 

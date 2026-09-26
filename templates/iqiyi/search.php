@@ -47,6 +47,11 @@ require_once __DIR__ . '/header.php';
             <p>试试更换关键词，或切换到其他数据源。</p>
         </div>
     <?php else: ?>
+        <div class="list-filter">
+            <input type="search" id="listFilter" autocomplete="off"
+                   placeholder="本页筛选：片名 / 别名 / 拼音 / 演员 / 导演 / 标签">
+            <span class="filter-count" id="filterCount"></span>
+        </div>
         <?php tplPartial('vod_grid', $tplName, ['list' => $list, 'sourceId' => $sourceId]); ?>
         <?= renderPagination($page, $pagecount, "search.php?wd=" . urlencode($wd) . "&source={$sourceId}") ?>
     <?php endif; ?>

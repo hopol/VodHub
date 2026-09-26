@@ -7,11 +7,47 @@
 
 ## [Unreleased]
 
+---
+
+## [1.1.0] - 2026-09-27
+
 ### 新增
+
+- **播放页用上此前完全未读取的源字段**：别名 `vod_sub`、上映日期 `vod_pubdate`、
+  导演 `vod_director`、编剧 `vod_writer`、主演 `vod_actor`、集数 `vod_total`、
+  片源状态 `vod_state`、豆瓣 `vod_douban_id` / `vod_douban_score`、拼音 `vod_en` 与
+  首字母 `vod_letter`、收录时间 `vod_time_add`、播放来源 `vod_play_from` /
+  `vod_play_server`、父分类 `type_id_1` —— 改造前这些字段在全站**一处都没被读过**。
+  新增共享片段 `partials/vod_meta.php`（信息 chips）与 `partials/vod_side.php`（侧栏信息），
+  5 套模板共用，改展示只需改片段而不是 5 份 `play.php`。
+- **列表页 / 搜索页本页筛选**：上游 `wd` 参数只匹配 `vod_name`（实测 `wd=<拼音>`、
+  `wd=<别名>` 均返回 0 条），别名、拼音、首字母、演员、导演、编剧、标签在站内检索里
+  原本是死的。现按服务端预拼的 `data-s` 串做纯前端子串匹配，不发额外请求。
+- **字段智能归一化（TypeSafe System One，可关）**：地区/语言的长尾与残缺值、
+  由 `vod_class` + `vod_tag` 归出的主类型、非规整的更新状态句式、内容分级。
+  规则层（`includes/fields.php`）不联网且优先，实测本源 200 条记录中地区 200 条、
+  语言 198 条由规则直接命中；模型只补规则答不上来的部分。**异步**调用、同一条影片的
+  多个判断合并进一次请求并行求值、结果按（数据源 + 影片）缓存 30 天、失败写 10 分钟
+  负缓存并保持原始字段。开关在「站点设置 → 播放页字段智能归一化」。
+- 新增 `includes/fields.php`（字段解析层）与 `includes/enrich.php`（归一化层）。
 
 ### 修复
 
+- **简介里的 HTML 标签原样显示**：`vod_content` 含 `<p>`、`<br/>`、`&nbsp;`，
+  此前整体过 `h()` 转义后用户看到的是字面量 `<p>…</p>`。现统一压成纯文本再转义，
+  并在 `vod_content` 与 `vod_blurb` 之间按清洗后长度择优。
+- **列表卡片大量「未知」角标**：卡片角标此前**只显示时长**，而本源 `vod_duration`
+  仅 22% 填充，等于 78% 的卡片挂着「未知」。现改为按填充率取优先级：
+  `vod_remarks`(100%) → `vod_state`(23%) → `vod_duration`(22%)，且无值不渲染。
+- **`formatDuration()` 认错单位**：只做 `intval()`，`1小时30分` 会被读成 **1 分钟**。
+  现认「小时/分钟/分/h/m」，并把整点写成「1小时」而非「1小时00分」。
+
 ### 变更
+
+- 卡片副标题追加别名；评分角标在 `vod_score` 为 0 时回退 `vod_douban_score`
+  （两者填充互补，12% / 11% 非零）。
+- 上游 `vod_status = 0` 的内容不再进列表。
+- 数据库结构迁移至 v5（新增 `enrich` 表）；「清空全部缓存」同时清空归一化记录。
 
 ---
 
@@ -104,6 +140,7 @@
 
 ---
 
-[Unreleased]: https://github.com/hopol/VodHub/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/hopol/VodHub/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/hopol/VodHub/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/hopol/VodHub/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/hopol/VodHub/releases/tag/v1.0.0
