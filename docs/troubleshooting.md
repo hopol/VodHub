@@ -103,7 +103,52 @@ sqlite3 runtime/data.db "UPDATE settings SET value='0' WHERE key='access_enabled
 3. **还不行** → 点该源的**「识别图域」**，把实际图片域名写进白名单
 4. **部分图片裂** → 检查白名单是否填得太窄，把多余的域名去掉
 
+**打开 `img.php?...` 这条链接本身看返回的字**，它会直接告诉你是哪一层拦的：
+
+| 返回 | 含义 | 处理 |
+|------|------|------|
+| `200` + 图片 | 代理正常 | 看别处 |
+| `400 missing source param (s)` | 链接里确实没有 `s=` | 从页面上重新取地址（右键图片 → 复制图片地址） |
+| `404 source not found (s=N)` | 数据源被删过，或 id 对不上 | 回后台确认该源还在 |
+| `403 proxy disabled for source N [名称]` | **这个源确实没勾选代理** | 勾上保存 |
+| `403 host not allowed` | 图片域名不在白名单里 | 点「识别图域」，或把白名单清空 |
+| `403 private address blocked` | 目标是内网/保留地址，SSRF 拦截（**这是正常的**） | 不能绕过 |
+| `502 fetch failed` | 你服务器访问不到那张图 | 查网络 / 上游 |
+| `415 not an image` | 上游返回的不是图片 | 上游异常 |
+| 页面满是 Fatal error | — | 见下方「代理后满屏 Fatal error」 |
+| `img.php 开头有多余输出…` | 文件带 UTF-8 BOM 或 `<?php` 前有空行 | 用「UTF-8 无 BOM」重新保存，并删掉 `<?php` 前后的空行 |
+| 图片不显示，但链接打开是正常的图 | 浏览器缓存了旧的失败响应 | `Ctrl+Shift+R` 强制刷新 |
+| 传了新 img.php 还是老样子 | **OPcache 没刷新** | 后台 → 站点与维护 → **清理系统缓存**（勾上 OPcache）→ 保存。见下方「传了文件前台没变化」 |
+
 > 详细原理见 [数据源接入 · 图片代理](api-sources.md#图片代理与防盗链)
+
+### 代理一开就满屏 Fatal error
+
+`img.php` 早期版本漏了 `require includes/functions.php`，导致图片抓回来之后在
+「自动学习域名」那一步调用 `learnImgHost()` 直接 `Call to undefined function` ——
+**取图成功却一个字节都发不出去**，表现为开关一开图片全裂。升级到 v1.1.1 及以上即可。
+
+> 注意：这个错误在**浏览器里看不出来**，只会看到封面变占位图。要确认就直接打开
+> 一条 `img.php?...` 链接，或看服务器错误日志。
+
+### 传了文件，前台没变化
+
+**九成是 OPcache。** 虚拟主机常把 `opcache.validate_timestamps` 设为 `0`，
+意思是「永不自动重新校验」—— 换完文件**等多久都没用**，跑的永远是旧代码。
+
+判断：
+
+1. 后台 → 站点与维护 → 看「**OPcache**」那一行
+2. 如果写着「**且 validate_timestamps=0（永不自动重新校验）**」，就是它
+3. 勾上 **OPcache** → 点「清理系统缓存」→ 再刷新页面
+
+等价于调用 `opcache_reset()`，磁盘上新改的文件立即生效。
+
+> 实测复现：`validate_timestamps=0` 下改文件 → 请求仍是旧代码 →
+> 等 4 秒还是旧代码 → 点该按钮 → 立即变成新代码。
+>
+> 如果按钮提示「未安装 OPcache 扩展」或「受 restrict_api 限制」，
+> 这条路走不通，得去主机面板重启 PHP 或改 `opcache.validate_timestamps`。
 
 ### 图片代理开了反而更慢
 

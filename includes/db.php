@@ -177,11 +177,14 @@ function getSource(int $id): ?array {
 
 /** 新增数据源，返回 id */
 function addSource(string $name, string $apiUrl, int $sort = 0, string $note = '',
-                  string $template = '', int $groupId = 0, int $imgProxy = 0, string $imgHosts = ''): int {
+                  string $template = '', int $groupId = 0, int $imgProxy = 0, string $imgHosts = '',
+                  int $createdAt = 0): int {
     $stmt = db()->prepare('INSERT INTO sources
         (name, api_url, enabled, sort, note, template, group_id, img_proxy, img_hosts, created_at)
         VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?)');
-    $stmt->execute([$name, $apiUrl, $sort, $note, $template, $groupId, $imgProxy, $imgHosts, time()]);
+    // $createdAt > 0 时保留原始收录时间（配置导入要用），否则取当前时间
+    $stmt->execute([$name, $apiUrl, $sort, $note, $template, $groupId, $imgProxy, $imgHosts,
+                    $createdAt > 0 ? $createdAt : time()]);
     return (int) db()->lastInsertId();
 }
 

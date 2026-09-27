@@ -17,6 +17,7 @@ require_once __DIR__ . '/client.php';
 require_once __DIR__ . '/functions.php';
 require_once __DIR__ . '/template.php';
 require_once __DIR__ . '/enrich.php';
+require_once __DIR__ . '/config-io.php';   // 系统缓存清理 + 配置导入导出
 
 /** action → 处理函数映射表 */
 $_ADMIN_ACTION_MAP = [
@@ -36,6 +37,7 @@ $_ADMIN_ACTION_MAP = [
     'access_settings'       => 'adminActionAccessSettings',
     'change_admin_password' => 'adminActionChangeAdminPassword',
     'clear_cache'           => 'adminActionClearCache',
+    'import_config'         => 'adminActionImportConfig',
 ];
 
 /**
@@ -335,12 +337,32 @@ function adminActionResetTemplate(array $post): string {
         return '✅ 已恢复「' . h(tplMeta($tpl)['title']) . '」的默认样式';
 }
 
+/**
+ * 清理系统缓存
+ *
+ * 三项分开勾选：接口缓存与归一化记录是「数据缓存」，清了会重新请求上游；
+ * OPcache 是「PHP 脚本缓存」，清了才会加载磁盘上新改的文件 ——
+ * 虚拟主机上「传了文件前台没变化」九成是它，所以单独给一个开关。
+ */
 function adminActionClearCache(array $post): string {
-        $n = 0;
-        foreach ((glob(CACHE_DIR . '/*.json') ?: []) as $f) {
-            if (@unlink($f)) { $n++; }
+        return clearSystemCache(
+            intval($post['clear_api'] ?? 0) === 1,
+            intval($post['clear_enrich'] ?? 0) === 1,
+            intval($post['clear_opcache'] ?? 0) === 1
+        );
+}
+
+/**
+ * 导入配置（JSON）
+ *
+ * 支持上传文件或直接粘贴；文件优先。
+ * 覆盖模式会清空现有分组与数据源，因此由前端 confirm 确认。
+ */
+function adminActionImportConfig(array $post): string {
+        $read = configReadInput($_FILES, $post);
+        if (!$read['ok']) {
+            return $read['msg'];
         }
-        // 字段归一化结果也存在 SQLite 里，属于缓存，一并清掉
-        enrichClearCache();
-        return '✅ 已清空全部缓存（' . $n . ' 个接口文件 + 归一化记录）';
+        $result = configImport($read['data'], (string) ($post['mode'] ?? 'merge'));
+        return $result['msg'];
 }

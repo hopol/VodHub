@@ -9,6 +9,67 @@
 
 ---
 
+## [1.2.0] - 2026-09-27
+
+### 新增
+
+- **后台「清理系统缓存」**：原来只有「清空全部缓存」（接口缓存 + 归一化记录），
+  现改为可勾选的三项，并**新增 OPcache 重置** —— 虚拟主机上
+  `opcache.validate_timestamps=0`（永不自动重新校验）时，换完文件前台永远跑旧代码，
+  **等多久都没用**，必须显式 `opcache_reset()`。
+  实测复现：`validate_timestamps=0` 下改文件 → 请求仍是旧代码 → 等 4 秒还是旧代码
+  → 点该按钮 → 立即生效。状态行同时展示 OPcache 是否启用、缓存了多少脚本与键、
+  内存占用，以及 `validate_timestamps` 是否为 0（后者是「传了没用」的根因）。
+- **后台「配置导入导出」**：导出站点设置、模板样式变量、分组与数据源为 JSON
+  （`format=vodhub-config`，`version=1`）。导入支持**合并**（按 `api_url` 匹配，
+  只增不删）与**覆盖**（清空重建）两种方式，覆盖前由前端二次确认。
+  **覆盖导入会原样保留 `id`** —— 升级演练时发现，若不保留，AUTOINCREMENT 会让
+  数据源 id 从 8 跳到 16，`img.php?...&s=8` 与 `list.php?source=8` 这类 URL 全部失效；
+  现导出带 `id`，覆盖模式表已清空、按文件里的 id 原样插回，URL 升级后仍然有效。
+  分组 `id` 同样保留，源的 `group_id` 跟着重映射。
+  密码哈希与 API 密钥**默认不导出**，只有导出时显式勾选才带上；
+  导入时文件没带密钥就绝不覆盖现有密码。整个导入在事务内执行，失败自动回滚。
+  新增 `includes/config-io.php`；`addSource()` 增加可选 `createdAt` 参数以保留原始收录时间。
+
+### 修复
+
+- **[严重] 开启图片代理后所有封面都打不开**：`img.php` 只 `require` 了
+  `config.php` 与 `includes/db.php`，漏了 `includes/functions.php`，
+  于是取图成功后在「自动学习图片域名」那一步调用 `learnImgHost()` 直接
+  `Call to undefined function` **Fatal error** —— 图片字节一个都没发出去。
+  该缺陷自 v1.0.0 起就存在，v1.0.0 / v1.0.1 / v1.1.0 三个版本全部命中。
+  **注意**：浏览器里表现为封面全变占位图，直接打开 `img.php?...` 才能看到报错。
+- **图片代理失败时无法定位原因**：缺参数、数据源不存在、代理未开启三种情况
+  共用同一句 `proxy disabled`。现拆成可区分的返回：
+  `400 missing source param (s)` / `404 source not found (s=N)` /
+  `403 proxy disabled for source N [名称]`。
+- **[严重] `s` 参数在部分主机上读不到，图片全部被拒**：原代码用 `$_GET['s']`
+  取数据源 ID，而 PHP 按 ini 的 `arg_separator.input` 切分查询串，**该值因主机而异**。
+  实测 `arg_separator.input=';'`（或取到其他非 `&` 值）时 `s` 整个丢掉，
+  `u` 的值里反而带着 `&s=1` —— 这正是那句笼统的 `proxy disabled` 的来源。
+  同理，从网页源代码复制出来的地址里 `&` 是字面的 `&amp;`，也读不到 `s`。
+  现改为直接按字面 `&` 切分 `$_SERVER['QUERY_STRING']`，完全不受 ini 影响，
+  并容忍 `amp;` 前缀 —— **这两种写法现在都能正常出图**。
+- **文件开头有 BOM / 空行时「接口 200 却不显示图片」**：`<?php` 之前的字节会被
+  PHP 先吐出去。开着 `output_buffering` 时它们混进图片数据，浏览器解码失败；
+  没开缓冲时 `headers` 已发送，`Content-Type` 失效。现改为**任何 require 之前**
+  检测「文件不是以 `<?php` 开头」：有缓冲就整体丢弃缓冲（此时里面只有这点垃圾），
+  无缓冲则输出一条指明文件与行号的诊断，而不是让图片默默裂掉。
+- **图片地址被二次解码**：`$_GET['u']` 已被 PHP 解码过一次，原代码无条件再
+  `urldecode()` 一遍，会把地址里的字面 `+` 读成空格、把 `%25` 之类的合法序列
+  再剥一层。现自行解析查询串时统一用 `rawurldecode()`。
+- **新增 `X-Img-Proxy` 响应头**：上传后 `curl -I` 一条 `img.php` 就能确认文件
+  真的生效 —— 很多主机会开 OPcache，传完不重启仍跑旧代码。
+
+### 文档
+
+- `docs/troubleshooting.md` 新增图片代理**错误码对照表（12 行）**，
+  「代理一开就满屏 Fatal error」的成因说明，以及
+  **「传了文件，前台没变化」** 的排查步骤（OPcache `validate_timestamps=0`）。
+- `docs/configuration.md` 新增「清理系统缓存（含 OPcache）」与「配置导入导出」两节。
+
+---
+
 ## [1.1.0] - 2026-09-27
 
 ### 新增
@@ -140,7 +201,8 @@
 
 ---
 
-[Unreleased]: https://github.com/hopol/VodHub/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/hopol/VodHub/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/hopol/VodHub/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/hopol/VodHub/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/hopol/VodHub/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/hopol/VodHub/releases/tag/v1.0.0

@@ -16,6 +16,7 @@ require_once __DIR__ . '/includes/client.php';
 require_once __DIR__ . '/includes/functions.php';
 require_once __DIR__ . '/includes/template.php';
 require_once __DIR__ . '/includes/enrich.php';
+require_once __DIR__ . '/includes/config-io.php';   // 系统缓存 + 配置导入导出
 require_once __DIR__ . '/includes/admin-actions.php';
 
 sessionStart();
@@ -72,6 +73,12 @@ if (isset($_GET['logout'])) {
 // 导致任何人打开 admin.php 都能看到完整后台（含全部数据源接口地址、站点设置），
 // 且"退出"重定向回来后又渲染出整页，表现为点了没反应。
 requireAdmin();
+
+// 配置导出：admin.php?export=1[&secrets=1] → 直接下载 JSON。
+// 放在渲染之前 —— header() 一旦有 HTML 输出就失效；鉴权已由上面的 requireAdmin() 挡住。
+if (isset($_GET['export'])) {
+    configExportDownload(isset($_GET['secrets']) && $_GET['secrets'] !== '');
+}
 
 // ---------------------------------------------------------------- 渲染
 $allSources = getSources(false);
@@ -581,19 +588,77 @@ $editingGroup = $editGid > 0 ? getGroup($editGid) : null;
             <button class="btn btn-primary" type="submit">保存</button>
         </form>
 
-        <h3 class="admin-subtitle">🧹 缓存管理</h3>
+        <?php $cacheStat = cacheStats(); $opInfo = opcacheInfo(); ?>
+        <h3 class="admin-subtitle">🧹 系统缓存</h3>
         <p class="muted">
-            当前缓存占用：<b><?= h(cacheSize()) ?></b>；
-            字段归一化记录 <b><?= h(enrichCacheCount()) ?></b> 条。
-            列表/详情缓存 <?= intval(CACHE_TTL / 60) ?> 分钟；
-            分类数据走长缓存 <?= intval(CACHE_TTL_TYPE / 3600) ?> 小时（分类几乎不变，减少上游请求）。
-            上游故障时会自动降级使用旧缓存。
+            接口缓存 <b><?= $cacheStat['files'] ?> 个文件 / <?= h($cacheStat['size']) ?></b>；
+            字段归一化记录 <b><?= h((string) $cacheStat['enrich']) ?></b> 条；
+            列表/详情 <?= intval(CACHE_TTL / 60) ?> 分钟、分类 <?= intval(CACHE_TTL_TYPE / 3600) ?> 小时，
+            上游故障时自动降级用旧缓存。
         </p>
-        <form method="post" action="admin.php"
-              onsubmit="return confirm('确定清空全部缓存吗？下次访问会重新请求接口。')">
+        <p class="muted">
+            <b>OPcache：</b><?= h($opInfo['msg']) ?><?= $opInfo['available'] ? '；已缓存 ' . intval($opInfo['scripts']) . ' 个脚本 / ' . intval($opInfo['keys']) . ' 个键（上限 ' . intval($opInfo['max_keys']) . '）；' . h($opInfo['memory']) : '' ?>。
+        </p>
+
+        <form class="admin-form" method="post" action="admin.php"
+              onsubmit="return confirm('确定清理勾选的缓存吗？接口缓存与归一化记录清掉后会重新请求上游。')">
             <input type="hidden" name="action" value="clear_cache">
+            <label class="field-check">
+                <input type="checkbox" name="clear_api" value="1" checked>
+                <span>接口响应缓存（<code>runtime/cache/*.json</code>）</span>
+            </label>
+            <label class="field-check">
+                <input type="checkbox" name="clear_enrich" value="1" checked>
+                <span>字段归一化记录（<code>enrich</code> 表）</span>
+            </label>
+            <label class="field-check">
+                <input type="checkbox" name="clear_opcache" value="1" checked>
+                <span><b>OPcache（PHP 脚本缓存）</b> —— 上传文件后前台没变化，就是它在跑旧代码</span>
+            </label>
             <input type="hidden" name="csrf" value="<?= csrfToken() ?>">
-            <button class="btn btn-danger" type="submit">清空全部缓存</button>
+            <button class="btn btn-danger" type="submit">清理系统缓存</button>
+        </form>
+
+        <h3 class="admin-subtitle">📦 配置导入导出</h3>
+        <p class="muted">
+            导出的是<b>配置</b>（站点设置、模板样式、分组、数据源），
+            <b>不含</b>接口响应缓存与归一化记录 —— 那些是可重建的缓存。
+            密码哈希与 API 密钥<b>默认不导出</b>，需要迁移密码时再勾选。
+        </p>
+
+        <form class="admin-form" method="get" action="admin.php">
+            <label class="field-check">
+                <input type="checkbox" name="secrets" value="1">
+                <span>同时导出密码哈希与 API 密钥（⚠️ 文件含敏感信息，勿外传）</span>
+            </label>
+            <button class="btn btn-primary" type="submit" name="export" value="1">⬇ 导出 JSON</button>
+        </form>
+
+        <form class="admin-form" method="post" action="admin.php" enctype="multipart/form-data"
+              onsubmit="return confirm('确定导入配置吗？选「覆盖」会清空现有分组与数据源，不可撤销。')">
+            <input type="hidden" name="action" value="import_config">
+            <label class="field field-wide">
+                <span>配置文件（.json）</span>
+                <input type="file" name="config_file" accept=".json,application/json,text/plain">
+                <small class="muted">也可以不选文件，直接把 JSON 粘贴到下面的框里（文件优先）。</small>
+            </label>
+            <label class="field field-wide">
+                <span>或粘贴 JSON</span>
+                <textarea name="config_text" rows="5" spellcheck="false"
+                          placeholder='{"format":"vodhub-config","version":1,...}'></textarea>
+            </label>
+            <label class="field">
+                <span>导入方式</span>
+                <select name="mode">
+                    <option value="merge" selected>合并 —— 按接口地址匹配，只新增/更新，不删除</option>
+                    <option value="replace">覆盖 —— 清空现有分组与数据源，完全按文件重建</option>
+                </select>
+                <small class="muted">
+                    两种方式都会写入设置项；文件里没带密钥时，后台密码与访问密码保持不变。
+                </small>
+            </label>
+            <input type="hidden" name="csrf" value="<?= csrfToken() ?>">
+            <button class="btn btn-primary" type="submit">⬆ 导入配置</button>
         </form>
     </section>
 </main>
