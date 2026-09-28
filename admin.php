@@ -641,6 +641,34 @@ $editingGroup = $editGid > 0 ? getGroup($editGid) : null;
         <?php
         $cacheStat = cacheStats(); $opInfo = opcacheInfo();
 
+        /**
+         * 把异常翻译成「用户该做什么」。
+         *
+         * ⚠ 不要一律归因为「升级包没传全」—— 2026-09-28 线上事故：
+         * InfinityFree 把 disk_free_space / disk_total_space 放进了 disable_functions，
+         * 抛的是 `Call to undefined function disk_total_space()`，**与升级包完全无关**，
+         * 而旧文案写死了 config.php 归因，把人往错方向带。
+         * 归因必须跟着错误类型走。
+         */
+        $lpDiagnose = static function (string $msg): array {
+            $m = strtolower($msg);
+            if (str_contains($m, 'disk_total_space') || str_contains($m, 'disk_free_space')) {
+                return ['主机禁用了 disk_free_space / disk_total_space（disable_functions）',
+                        '这与升级包无关。水位探测已自动降级 —— 请在上面「容量档位」手动选紧凑或标准档；硬上限仍然生效。'];
+            }
+            if (str_contains($m, 'undefined function')) {
+                return ['主机禁用了某个函数：' . $msg,
+                        '跑 vp.php 的 H 节看禁了哪些；前台会自动降级，不影响访问。'];
+            }
+            if (str_contains($m, 'constant') || str_contains($m, 'page_cache_dir') || str_contains($m, 'app_version')) {
+                return [$msg, 'config.php 是旧版 —— 补传升级包里的 config.php。'];
+            }
+            if (str_contains($m, 'no such file') || str_contains($m, 'failed opening required')) {
+                return [$msg, '升级包缺文件 —— 按 vp.php 的 B 节标「缺!」的补传。'];
+            }
+            return [$msg, '把上面这行原样贴出来提 Issue。'];
+        };
+
         // ---------------------------------------------------------------- 故障隔离
         // 这一段依赖 1.3.0 新增的函数与常量，而它下面**紧跟着**「清理系统缓存 · OPcache」——
         // 那是「传了文件没变化」时唯一的救场按钮。
@@ -679,10 +707,28 @@ $editingGroup = $editGid > 0 ? getGroup($editGid) : null;
         ?>
         <?php if ($lp !== null): ?>
         <h3 class="admin-subtitle">🔋 极致低功耗状态</h3>
+        <?php if (($lp['disk']['probe'] ?? 'ok') !== 'ok'): ?>
+        <p class="muted" style="color:#8a6d3b;background:#fcf8e3;padding:6px 10px;border-radius:4px">
+            ℹ️ 本机<b>磁盘探测不可用</b>（<code>disk_free_space</code> / <code>disk_total_space</code>
+            被主机 <code>disable_functions</code> 禁用，免费主机常见）——
+            <b>与升级包无关</b>，水位控制已自动停用，档位按上面「容量档位」的设置运行，
+            <b>各目录硬上限仍然生效</b>。1 GB 空间请手动选「紧凑」。
+        </p>
+        <?php endif; ?>
         <p class="muted">
-            磁盘可用 <b><?= round($lp['disk']['pct'], 1) ?>%</b>
-            （<?= h(bytesHuman((int) $lp['disk']['free'])) ?> / <?= h(bytesHuman((int) $lp['disk']['total'])) ?>）；
-            当前档位 <b><?= h((string) $lp['caps']['tier']) ?></b>
+            <?php $probeOk = (($lp['disk']['probe'] ?? 'ok') === 'ok'); ?>
+            磁盘可用 <?php if ($probeOk): ?>
+                <b><?= round($lp['disk']['pct'], 1) ?>%</b>
+                （<?= h(bytesHuman((int) $lp['disk']['free'])) ?> / <?= h(bytesHuman((int) $lp['disk']['total'])) ?>）
+            <?php else: ?>
+                <b>探测不可用</b>（见上方说明）
+            <?php endif; ?>；
+            容量档位 <b><?= (($lp['caps']['base'] ?? '') === 'compact') ? '紧凑（约 132 MB）' : '标准（约 387 MB）' ?></b>
+            <?php if (($lp['caps']['probe'] ?? 'ok') !== 'ok'): ?>
+                · 水位<b>未收紧</b>（探测不可用）
+            <?php else: ?>
+                · 水位 <b><?= h((string) $lp['caps']['tier']) ?></b><?= ((string) ($lp['caps']['tier'] ?? 'normal')) !== 'normal' ? '（上限已按水位缩放）' : '' ?>
+            <?php endif; ?>
             <?php if ((int) ($lp['caps']['pct'] ?? 100) < GUARD_REDLINE): ?>
                 <span class="alert alert-error" style="padding:2px 6px">低于 <?= GUARD_REDLINE ?>% 红线，已停止写入页面与图片缓存</span>
             <?php endif; ?>
@@ -698,14 +744,13 @@ $editingGroup = $editGid > 0 ? getGroup($editGid) : null;
             —— 每小时自动换桶过期，配置变更时全量作废，超过 2 小时的桶自动回收。
         </p>
         <?php else: ?>
+        <?php [$why, $hint] = $lpDiagnose((string) $lpWhy); ?>
         <h3 class="admin-subtitle">🔋 极致低功耗状态</h3>
         <p class="muted" style="color:#a94442">
-            ⚠️ 无法显示（<?= h($lpWhy) ?>）—— <b>升级包没有完整覆盖</b>。
-            1.3.0 的 <code>config.php</code> 新增了 4 个常量（<code>APP_VERSION</code>、
-            <code>CACHE_TTL_NEG</code>、<code>PAGE_CACHE_DIR</code>、<code>IMG_CACHE_DIR</code>）。
-            <b>前台目前能正常打开（新文件已自带默认值兜底）</b>，
-            但请补传 <code>config.php</code>，否则容量档位与版本号读不到。
-            <b>下方「系统缓存」不受影响，照常可用。</b>
+            ⚠️ 无法显示 —— <b><?= h($why) ?></b><br>
+            <b>处理：</b><?= $hint ?><br>
+            <b>影响面：</b>仅本状态栏；下方「系统缓存」照常可用，
+            <b>前台也能正常打开</b>（新文件已自带默认值兜底）。
         </p>
         <?php endif; ?>
 

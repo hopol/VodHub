@@ -140,7 +140,12 @@ if (!function_exists('opcache_get_status')) {
     echo "  未安装 opcache 扩展 —— 不存在「传了文件不生效」的问题\n";
 } else {
     $st = @opcache_get_status(false);
-    if (!is_array($st) || empty($st['opcache_enabled'])) {
+    if (!is_array($st)) {
+        // opcache.restrict_api 会让 opcache_get_status() 直接返回 false —— 这不等于「未启用」，
+        // 后台那行能读到说明扩展是在跑的。别在这里误报。
+        echo "  opcache_get_status() 读不到 —— 多半是 opcache.restrict_api 限制（不等于未启用）。\n";
+        echo "  以后台「🧹 系统缓存」那一行的 OPcache 状态为准。\n";
+    } elseif (empty($st['opcache_enabled'])) {
         echo "  OPcache 未启用\n";
     } else {
         $mem   = is_array($st['memory_usage'] ?? null) ? $st['memory_usage'] : [];
@@ -222,6 +227,53 @@ if (!is_file('admin.php')) {
     echo "\n  判定口诀：源码有 + 后台没看到 = 截断；源码就没有 = admin.php 旧版。\n";
 }
 
+// ================================================================ H 禁用函数
+HR('H 禁用函数（disable_functions）');
+echo "  本项目依赖的关键函数，**被禁的会直接让对应功能 fatal**：\n\n";
+echo "  严重度：🔴 必挂   🟠 该功能降级   🟡 影响小\n\n";
+
+$funcs = [
+    // [函数, 严重度, 谁在用 / 禁了会怎样]
+    ['disk_free_space',     '🔴', 'guardDisk 水位探测 —— 禁了曾把整站前台打死成空体 500（1.3.0 已修，现降级）'],
+    ['disk_total_space',    '🔴', '同上（InfinityFree 实测被禁）'],
+    ['glob',                '🟠', '各类 GC —— 禁了就不回收，缓存只能靠手动清理'],
+    ['gethostbynamel',      '🔴', 'img.php 的 SSRF DNS 校验 —— 禁了会**拒绝代理**（宁可图不显示，不开内网口）'],
+    ['file_put_contents',   '🔴', '缓存/静态页/图片落盘 —— 禁了几乎整站不可用'],
+    ['file_get_contents',   '🔴', '读缓存 —— 同上'],
+    ['rename',              '🟠', '原子写（.tmp → 正式文件）—— 禁了会有半截文件风险'],
+    ['mkdir',               '🟠', '创建 c/ 与 static/imgcache/ —— 禁了自动降级为动态渲染'],
+    ['is_file',             '🔴', '到处都在用'],
+    ['md5',                 '🟢', '缓存文件名'],
+    ['json_encode',         '🔴', '接口与富化'],
+    ['json_decode',         '🔴', '接口与富化'],
+    ['curl_init',           '🔴', '取上游数据/图片 —— 禁了等于本项目整体不可用'],
+    ['gethostbyname',       '🟡', '备用'],
+    ['session_start',       '🔴', '访问密码与后台登录'],
+    ['password_hash',       '🔴', '管理密码'],
+    ['password_verify',     '🔴', '登录校验'],
+    ['random_bytes',        '🟠', 'CSRF 令牌'],
+    ['opcache_get_status',  '🟡', '后台 OPcache 状态（读不到只是显示不了）'],
+    ['opcache_reset',       '🟡', '后台清理 OPcache 按钮'],
+    ['opendir',             '🟢', '未使用'],
+];
+$disabled = [];
+foreach ($funcs as [$fn, $sev, $why]) {
+    $ok = function_exists($fn);
+    printf("  %s %-22s %s\n", $ok ? '可用' : '禁用!', $fn, $why);
+    if (!$ok) { $disabled[] = $fn; }
+}
+echo "\n  => ", $disabled ? ('被禁：' . implode('、', $disabled)) : '全部可用', "\n";
+$df = trim((string) ini_get('disable_functions'));
+if ($df !== '') {
+    echo "  => php.ini disable_functions = ", $df, "\n";
+} else {
+    echo "  => php.ini disable_functions = （空）\n";
+}
+echo "\n  ⚠ 主机禁用某个函数时，本项目的处理原则是**降级而不是 fatal**：\n";
+echo "     · disk_*  → 水位控制停用，档位按后台「容量档位」设置，硬上限仍生效\n";
+echo "     · glob    → 跳过 GC，改用后台「清理」按钮\n";
+echo "     · gethostbynamel → 拒绝代理该图（保 SSRF 防护）\n";
+
 // ================================================================ F 结论
 HR('F 建议动作');
 $i = 1;
@@ -232,6 +284,9 @@ if ($bad) {
 echo "  ", $i++, ". ", ($sapi === 'apache2handler')
     ? "**OPcache 请在面板重启 PHP/Apache**，不要只点「清理」按钮（prefork 下每子进程独立 OPcache）"
     : "确认 .user.ini 生效：E 节 validate_timestamps 应为 1；为 0 就去面板 php.ini 设 1 / revalidate_freq=0", "\n";
+if ($disabled) {
+    echo "  ", $i++, ". H 节被禁的函数会导致对应功能降级 —— 见 H 节末尾的处理原则。\n";
+}
 echo "  ", $i++, ". 传完 / 重启后按顺序验证：`/static/style.css` 200 → `/admin.php` 200 → `/index.php` 200\n";
 echo "  ", $i++, ". 全部通过后，**立刻删除本文件 vp.php**。\n";
 echo "\n", str_repeat('-', 72), "\n用完请删除本文件。\n";

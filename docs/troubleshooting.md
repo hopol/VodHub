@@ -36,6 +36,49 @@ tail -f runtime/php_errors.log    # 部分环境
 
 > ⚠️ 找到问题后请把 `display_errors` 关回 `0`，生产环境不该把错误暴露给访问者。
 
+### 前台 500 空体 + 后台提示「无法显示（Call to undefined function disk_total_space()）」
+
+**现象**（InfinityFree 实测，`hop.free.je`）：
+
+| 项 | 表现 |
+|---|---|
+| 前台 `index/list/search/play/history` | **500 + 空响应体** |
+| `/static/*`、`/robots.txt` | 200 ✅ |
+| `/admin.php`、`/img.php`、`/enrich.php` | 正常 ✅ |
+| 后台「极致低功耗状态」 | ⚠️ 无法显示（**Call to undefined function disk_total_space()**） |
+| 下方「🧹 系统缓存」 | **照常可用**（故障隔离生效了） |
+
+**根因**：主机把 `disk_free_space` / `disk_total_space` 放进了 **`disable_functions`**
+（免费主机常见，InfinityFree 实测如此）。调用时抛的是 **`Error`**。
+
+> **`@` 只能抑制 Warning，抑制不了 `Error`。** 所以代码里那句
+> `@disk_total_space()` **没有任何保护作用**，Error 直接冒到 `renderTemplate()`
+> 把整站前台打死。而后台有 `try/catch`，所以**两边表现不一致** —— 这正是定位线索。
+
+**为什么只有 5 个前台页挂**：只有它们走 `renderTemplate()` → `pcSyncGate()` →
+`guardCaps()` → `guardDisk()`。`img.php` 不走，`enrich.php` 只 require 不调用，
+`admin.php` 有 try/catch。
+
+**怎么修**（1.3.0 已修，第 4 轮）：`guardDisk()` 加 `function_exists` + `try/catch`
+双层防护，探测不到就**按后台「容量档位」设置**跑，硬上限仍然生效。
+
+**你只需要**：用最新包覆盖 `includes/guard.php`、`admin.php`、`img.php`（或整体覆盖），
+然后到后台**手动选容量档位**（探测不到时 `auto` 取紧凑档）。
+
+**确认是哪一类问题**：跑 `vp.php` 看 **H 节** —— 它列出 21 个关键函数，
+直接标出哪些被 `disable_functions` 禁了，并给出 `php.ini disable_functions` 原值。
+
+**口诀**：
+
+| 后台提示里的错误 | 真正原因 | 处理 |
+|---|---|---|
+| `Call to undefined function disk_*` | **主机禁用函数**，与升级包无关 | 手动选容量档位 |
+| `Call to undefined function 其它` | 主机禁用了别的函数 | 跑 `vp.php` H 节 |
+| `Undefined constant ...` | **`config.php` 是旧版** | 补传 `config.php` |
+| `Failed opening required ...` | **升级包缺文件** | 按 B 节标 `缺!` 的补传 |
+
+---
+
 ### 升级 1.3.0 后首页 500（静态文件却正常）
 
 **现象**（2026-09-28 线上实测）：

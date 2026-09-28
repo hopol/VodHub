@@ -152,6 +152,57 @@
 
 ### 修复
 
+- **`disk_free_space` / `disk_total_space` 被主机禁用 → 前台再次 500（第四轮）。
+  这次是 InfinityFree（`hop.free.je`，路径 `infinityfree.com/if0_.../htdocs/`）。**
+
+  用 `vp.php` 的 C 节在**线上**直接拿到死因：
+
+  ```
+  B 节：13 个文件全部 OK      ← 升级包确实完整覆盖了
+  C 节：APP_VERSION=1.3.0 / PAGE_CACHE_DIR=... ← config.php 也确实是新版
+        NG! pcSyncGate()  Error: Call to undefined function disk_total_space()
+  ```
+
+  **两个我自己的错误**：
+
+  1. **`@` 只能抑制 Warning，抑制不了 `Error`。** 原代码是
+     `@disk_free_space()` / `@disk_total_space()` —— 函数被 `disable_functions`
+     禁用时抛的是 `Error`，`@` 毫无作用，直接冒到 `renderTemplate()` 把整站
+     前台打死成空体 500（后台因有 `try/catch` 反而没事，所以两边表现不一致）。
+     这是「可选的性能优化不该有把整站打死的权限」这条原则的**第四次**应用
+     ——前三次修的是常量，这次漏了「函数可能被禁用」。
+
+  2. **后台提示文案写死了 `config.php` 归因。** 用户照着去补传 `config.php`，
+     文件本来就是对的，白折腾。**归因必须跟着错误类型走。**
+
+  修复：
+
+  - `guardDisk()` 加**双层防护**：`function_exists`（覆盖 `disable_functions`）
+    + `try/catch (Throwable)`（兜底），并返回 `probe` 状态（`ok`/`disabled`/`failed`）；
+  - 探测不可用时 `guardCaps()` **按后台「容量档位」设置**决定上限
+    （`auto` 且探测不到 → 取**保守的紧凑档**：猜大了让 1 GB 主机拿 387 MB 预算，
+     猜小了只损失一点缓存容量，两害相权取其轻），**水位控制停用但硬上限仍生效**；
+  - `admin.php` 新增 **`lpDiagnose()`**，按错误类型分四类给不同处理建议：
+    `disk_*` 被禁 → 「与升级包无关，手动选容量档位」；
+    其它 `undefined function` → 「跑 vp.php 的 H 节」；
+    `Undefined constant` → 「config.php 是旧版」；
+    `Failed opening required` → 「升级包缺文件」；
+    其它 → 原样贴出来提 Issue；
+  - 状态栏在探测不可用时显示 **「磁盘可用 探测不可用」**，
+    不再显示自相矛盾的「100%（0 B / 0 B）」，并加一条黄底说明其影响面；
+  - `img.php` 的 `gethostbynamel()` 同样加 `function_exists` —— 它也被 `@` 包着，
+    且禁用时**必须拒绝代理**（`503 resolver disabled`），
+    宁可图片不显示也不能放开 SSRF 校验缺口；
+  - `guard.php` 的 `glob()` 调用同样加保护（禁了就跳过 GC，改用后台清理按钮）。
+
+  验证（Apache + `disable_functions=disk_free_space,disk_total_space`）：
+
+  | 路径 | 修复前（线上） | 修复后 |
+  |---|---|---|
+  | `/index.php` `/history.php` `/list.php` `/search.php` `/play.php` | **500 空体** | **全部 200** |
+  | 后台状态栏 | 「无法显示（Call to undefined function disk_total_space()）—— 升级包没有完整覆盖」 | 正常显示 + 黄底说明「被禁用、与升级包无关、硬上限仍生效」 |
+  | 页面完整性 | — | 30,099 B，系统缓存 / 配置导入导出 / OPcache 勾选俱全 |
+
 - **升级后首页 500（空响应体）—— 漏传 `config.php` 会打死整站前台。**
   线上实测（`tv.ieo.de5.net`）：静态文件与 `/admin.php` 全 200、
   `img.php` 返回正常的 400、`enrich.php` 返回 200，**唯独 5 个前台页

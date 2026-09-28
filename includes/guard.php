@@ -75,33 +75,74 @@ const GUARD_REDLINE = 8;
  * @return array{total:int,free:int,pct:float,tier:string}
  *         tier: normal / tight / compact / protect
  */
+/**
+ * 磁盘水位探测。
+ *
+ * ⚠ 这是**可选增强**，必须在任何主机上都拿得到安全默认值 ——
+ * 2026-09-28 线上事故（InfinityFree，hop.free.je）：
+ * 该主机把 disk_free_space / disk_total_space 放进了 disable_functions，
+ * 调用时抛 `Error: Call to undefined function disk_total_space()`。
+ *
+ * 关键点：**`@` 只能抑制 Warning，抑制不了 Error** —— 所以原来的
+ * `@disk_total_space()` 没有任何保护作用，Error 直接冒到 renderTemplate()，
+ * 把整站前台打死成空体 500（后台因有 try/catch 反而没事）。
+ *
+ * 两层防护缺一不可：
+ *   1) function_exists —— 覆盖 disable_functions（表现为 undefined function）
+ *   2) try/catch(Throwable) —— 覆盖其余一切
+ *
+ * 探测不可用时返回 `probe !== 'ok'`，由调用方按**后台手动设置的容量档位**
+ * 决定上限（此时水位控制失效，但硬上限仍然生效 —— 那才是防爆的主力）。
+ *
+ * @return array{total:int,free:int,pct:float,tier:string,probe:string}
+ *         probe: ok / disabled / failed
+ */
 function guardDisk(): array {
     static $cached = null;
     if ($cached !== null) {
         return $cached;
     }
-    $root  = dirname(__DIR__);
-    $free  = @disk_free_space($root);
-    $total = @disk_total_space($root);
 
-    if ($free === false || $total === false || $total <= 0) {
-        // 探测失败一律按「正常」处理 —— 宁可不收紧，也不要误进保护模式把功能停掉
+    // ① 函数可能被 disable_functions 禁用（免费主机常见）
+    if (!function_exists('disk_free_space') || !function_exists('disk_total_space')) {
         return $cached = [
             'total' => 0, 'free' => 0, 'pct' => 100.0, 'tier' => 'normal',
+            'probe' => 'disabled',
         ];
     }
 
-    $pct  = $free / $total * 100;
-    $tier = $pct < GUARD_REDLINE ? 'protect'
-          : ($pct < 15           ? 'compact'
-          : ($pct < 30           ? 'tight' : 'normal'));
+    // ② 其余一切异常都兜住 —— 水位探测绝不能把站点打死
+    try {
+        $root  = dirname(__DIR__);
+        $free  = @disk_free_space($root);
+        $total = @disk_total_space($root);
 
-    return $cached = [
-        'total' => (int) $total,
-        'free'  => (int) $free,
-        'pct'   => round($pct, 2),
-        'tier'  => $tier,
-    ];
+        if ($free === false || $total === false || $total <= 0) {
+            // 探测失败一律按「正常」处理 —— 宁可不收紧，也不要误进保护模式把功能停掉
+            return $cached = [
+                'total' => 0, 'free' => 0, 'pct' => 100.0, 'tier' => 'normal',
+                'probe' => 'failed',
+            ];
+        }
+
+        $pct  = $free / $total * 100;
+        $tier = $pct < GUARD_REDLINE ? 'protect'
+              : ($pct < 15           ? 'compact'
+              : ($pct < 30           ? 'tight' : 'normal'));
+
+        return $cached = [
+            'total' => (int) $total,
+            'free'  => (int) $free,
+            'pct'   => round($pct, 2),
+            'tier'  => $tier,
+            'probe' => 'ok',
+        ];
+    } catch (Throwable $e) {
+        return $cached = [
+            'total' => 0, 'free' => 0, 'pct' => 100.0, 'tier' => 'normal',
+            'probe' => 'failed',
+        ];
+    }
 }
 
 /**
@@ -148,7 +189,13 @@ function guardCaps(): array {
     $caps['sess_days']   = 1;
     $caps['bucket_hours'] = 2;   // 页面静态桶保留 2 小时
 
+    // base = 由容量档位决定的**预算档**（紧凑 132 MB / 标准 387 MB）
+    // tier = 由**水位**决定的缩放档（normal 不缩放 / tight ×0.6 / compact ×0.5 / protect 停写）
+    // 两者是不同维度：探测不到水位时 tier=normal（不缩放），但 base 仍是紧凑档 ——
+    // 后台必须分开显示，否则会出现「档位 normal 却是 15 MB 上限」这种自相矛盾。
+    $caps['base']      = $small ? 'compact' : 'standard';
     $caps['tier']      = $d['tier'];
+    $caps['probe']     = $d['probe'] ?? 'ok';   // 水位探测状态：ok / disabled / failed
     $caps['pct']       = $d['pct'];
     $caps['free']      = $d['free'];
     $caps['total']     = $d['total'];
@@ -179,7 +226,13 @@ function guardIsSmall(int $totalBytes): bool {
     if ($mode === 'standard') {
         return false;
     }
-    return $totalBytes > 0 && $totalBytes <= (int) (1.5 * GUARD_GB);
+    // auto：探测得到就按总容量判；**探测不到（disk_* 被禁或失败）就取保守的紧凑档** ——
+    // 猜大了会让 1 GB 主机拿到 387 MB 预算，猜小了只损失一点缓存容量，
+    // 两害相权取其轻。
+    if ($totalBytes <= 0) {
+        return true;
+    }
+    return $totalBytes <= (int) (1.5 * GUARD_GB);
 }
 
 // ==================================================================
@@ -219,7 +272,9 @@ function guardGcAll(): void {
     $caps = guardCaps();
 
     $steps = [
-        fn () => guardGcFiles(CACHE_DIR, (int) $caps['cache_files'], (int) $caps['cache_bytes']),
+        fn () => function_exists('glob')
+            ? guardGcFiles(CACHE_DIR, (int) $caps['cache_files'], (int) $caps['cache_bytes'])
+            : null,
         fn () => guardGcPageBuckets((int) $caps['bucket_hours'], (int) $caps['page_files'], (int) $caps['page_bytes']),
         fn () => guardGcFiles(IMG_CACHE_DIR, PHP_INT_MAX, (int) $caps['img_bytes']),
         fn () => guardGcFiles(DATA_DIR . '/rl',  (int) $caps['rl_files'],  GUARD_MB),
@@ -295,6 +350,10 @@ function guardGcFiles(string $dir, int $maxFiles, int $maxBytes): void {
  * 1 GB 磁盘 5 天就满。
  */
 function guardGcPageBuckets(int $hours, int $maxFiles, int $maxBytes): void {
+    // glob 也可能在某些主机上被 disable_functions 禁用 —— 禁了就不 GC，绝不能 fatal
+    if (!function_exists('glob')) {
+        return;
+    }
     $dir = PAGE_CACHE_DIR;
     if (!is_dir($dir) || $hours <= 0) {
         return;

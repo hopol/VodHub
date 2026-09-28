@@ -185,6 +185,12 @@ if (filter_var($host, FILTER_VALIDATE_IP)) {
     }
 } else {
     // 域名先解析，再校验 IP，防止通过域名解析到内网
+    // gethostbynamel 也可能被 disable_functions 禁用 —— @ 只能抑制 Warning，
+    // 抑制不了 Error。禁用时无法做 DNS→IP 校验，宁可**拒绝代理**也不能放行，
+    // 否则 SSRF 防护会出现缺口（宁可图片不显示，不可打开内网入口）。
+    if (!function_exists('gethostbynamel')) {
+        imgFail(503, 'resolver disabled on this host');
+    }
     $ips = @gethostbynamel($host);
     if (empty($ips)) {
         imgFail(502, 'resolve failed');
