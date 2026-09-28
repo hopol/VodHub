@@ -173,6 +173,55 @@ if (!function_exists('opcache_get_status')) {
     }
 }
 
+// ================================================================ G 后台段落
+HR('G 后台段落完整性（读 admin.php 源码）');
+if (!is_file('admin.php')) {
+    echo "  admin.php 缺失！\n";
+} else {
+    $src = (string) @file_get_contents('admin.php');
+    echo "  admin.php 大小 = ", (int) strlen($src), " 字节（v1.3.0 应为 ",
+         (int) (EXPECTED['admin.php'][0] ?? 0), "）\n\n";
+
+    echo "  段落（从上到下，后台应该按这个顺序看到）：\n";
+    $sections = ['数据源管理', '数据源分组', '模板管理', '访问设置', '修改管理密码',
+                 '站点与维护', '极致低功耗状态', '系统缓存', '配置导入导出'];
+    $missingSec = [];
+    foreach ($sections as $t) {
+        $has = strpos($src, $t) !== false;
+        printf("    %s  %s\n", $has ? '有' : '缺!', $t);
+        if (!$has) { $missingSec[] = $t; }
+    }
+
+    echo "\n  入口标记（同时用来识别 admin.php 是哪个版本）：\n";
+    $marks = [
+        // ⚠ 键必须与 admin.php 源码里的真实写法一致：
+        //    复选框是 name="clear_opcache" value="1"，不是 value="clear_opcache"
+        'name="clear_opcache"' => ['清理系统缓存里的 OPcache 勾选', '1.2.0+'],
+        'import_config'        => ['配置导入表单',                 '1.2.0+'],
+        'name="export"'        => ['导出 JSON 按钮',               '1.2.0+'],
+        'name="clear_page"'    => ['页面静态缓存勾选',             '1.3.0+'],
+        'lowpower_tier'        => ['容量档位下拉',                 '1.3.0+'],
+        '极致低功耗状态'         => ['低功耗状态栏',                 '1.3.0+'],
+    ];
+    $oldest = null;
+    foreach ($marks as $k => [$label, $since]) {
+        $has = strpos($src, $k) !== false;
+        printf("    %s  %-28s （%s）\n", $has ? '有' : '缺!', $label, $since);
+        if (!$has && $oldest === null) { $oldest = $since; }
+    }
+
+    echo "\n  => ", $missingSec
+        ? ('admin.php 源码里就没有：' . implode('、', $missingSec) . ' —— **admin.php 是旧版**，见 B 节 md5')
+        : 'admin.php 源码里九段俱全', "\n";
+    if ($oldest !== null) {
+        echo "  => 该文件最早只到 ", $oldest, " 的功能 —— 用最新升级包覆盖 admin.php 即可。\n";
+    } else {
+        echo "  => 源码齐全。**如果你在后台看不到上面某一段，就是页面在它之前截断了**\n";
+        echo "     （回到 C 节看 pcSyncGate 是否抛错、E 节看 OPcache、B 节看别的文件是否旧）。\n";
+    }
+    echo "\n  判定口诀：源码有 + 后台没看到 = 截断；源码就没有 = admin.php 旧版。\n";
+}
+
 // ================================================================ F 结论
 HR('F 建议动作');
 $i = 1;
