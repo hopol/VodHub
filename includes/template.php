@@ -18,6 +18,7 @@ require_once __DIR__ . '/functions.php';
 // 片段（partials/*.php）与模板页都会用到字段层的解析函数，
 // 这里统一引入，避免每个模板各自 require 一遍、漏一个就是白屏。
 require_once __DIR__ . '/fields.php';
+require_once __DIR__ . '/pagecache.php';   // 支柱一：页面静态缓存（读走兜底、写顺便落盘）
 
 /** 模板根目录 */
 function tplRoot(): string {
@@ -223,6 +224,27 @@ function resolveTemplate($source = null): string {
  */
 function renderTemplate(string $pageFile, array $tplData = [], string $tplOverride = ''): void {
     // 注意：参数名刻意避开 $data/$page/$template，防止 extract() 跳过同名键
+
+    // ---------------------------------------------------------------- 第 2 层兜底
+    // 极致低功耗模式 · 支柱一。正常情况下 .htaccess 已经在 PHP 之前把
+    // c/<时间桶>/<key>.html 直出（0 EP）。走到这里只有四种可能：
+    //   ① 该小时内第一次访问（还没生成）  ② rewrite 不可用（Nginx / 禁用 mod_rewrite）
+    //   ③ 服务器时区与 PHP 对不上，-f 恒不成立  ④ 访问密码开启（必须过 PHP 鉴权）
+    // 前三种读盘远比重新渲染便宜（~3 ms vs ~70 ms），第四种 pcEnabled() 会返回 false。
+    pcSyncGate();   // 自愈：该关静态就写 c/.lock，该开就摘掉
+    $pcKey = pcKey($pageFile, $tplData);
+    if ($pcKey !== null && pcEnabled()) {
+        $hit = pcRead($pcKey);
+        if ($hit !== null) {
+            if (!headers_sent()) {
+                header('Content-Type: text/html; charset=utf-8');
+                header('Cache-Control: no-cache, must-revalidate');
+            }
+            echo $hit;
+            exit;
+        }
+    }
+
     if ($tplOverride === '') {
         $tplOverride = resolveTemplate($tplData['source'] ?? null);
     }
@@ -245,7 +267,18 @@ function renderTemplate(string $pageFile, array $tplData = [], string $tplOverri
     $tplName = $tplOverride;
     $tplMeta = tplMeta($tplOverride);
 
+    // 渲染进输出缓冲：拿到完整 HTML 后顺便落盘，供 .htaccess 下次 0 EP 直出。
+    // 先写 .tmp 再 rename —— rename 同文件系统内是原子的，rewrite 的 -f
+    // 绝不会读到半截 HTML。模板若中途 exit，缓冲由 PHP 关闭时自动刷出，
+    // 页面照常可见，只是这次没缓存上。
+    ob_start();
     require $file;
+    $html = (string) ob_get_clean();
+
+    if ($pcKey !== null && $html !== '') {
+        pcWrite($pcKey, $html);
+    }
+    echo $html;
 }
 
 /**

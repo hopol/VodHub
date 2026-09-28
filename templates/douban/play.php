@@ -53,6 +53,7 @@ require_once __DIR__ . '/header.php';
 
             <?php tplPartial('vod_meta', $tplName, [
                 'meta' => $meta, 'source' => $source, 'sourceId' => $sourceId,
+                'enrichPending' => $enrichPending ?? false,
             ]); ?>
 
             <?php if ($desc !== ''): ?>
@@ -108,6 +109,7 @@ require_once __DIR__ . '/header.php';
     <?php tplPartial('vod_side', $tplName, [
         'meta' => $meta, 'detail' => $detail, 'source' => $source,
         'sourceId' => $sourceId, 'playCount' => $playCount,
+        'enrichPending' => $enrichPending ?? false,
     ]); ?>
 </div>
 <?php endif; ?>

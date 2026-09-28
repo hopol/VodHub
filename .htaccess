@@ -10,7 +10,119 @@
     RewriteRule ^runtime/ - [F,L]
     # 模板文件只应由程序 include，禁止直接通过 URL 访问
     RewriteRule ^templates/.*\.(php|json)$ - [F,L]
+
+    # ============================================================
+    # 页面静态直出（极致低功耗模式 · 支柱一）
+    #
+    # 作用：命中时由 Apache 直接吐 c/<时间桶>/<key>.html —— **0 个 PHP 进程**。
+    # 未命中（-f 不成立）则整条规则不匹配，请求自然落回 PHP 生成新文件。
+    #
+    # 时间桶 %{TIME_YMD}-%{TIME_HOUR} 让静态文件**每小时自动过期一次**，
+    # 无需 cron、无需手动清缓存。超过 2 小时的桶由 includes/guard.php 删除 ——
+    # 没有那条 GC，本目录会以约 192 MB/天 的速度增长，1 GB 磁盘 5 天就满。
+    #
+    # ⚠ 安全红线：**开启访问密码时本段必须失效**。PHP 侧 pcEnabled() 在
+    #    access_enabled=1 时既不读也不写，c/ 下不会有文件，-f 自然不成立，
+    #    因此这里不需要（也无法）做鉴权判断 —— 靠「没有文件」来保证不绕过登录。
+    #
+    # ⚠ 时区：Apache 取的是服务器本地时区，PHP 侧为覆盖这种情况会把
+    #    应用时区 / 主机 ini 时区 / UTC 三种候选桶**都写一份**。若你的服务器
+    #    时区三者皆非，本段不会命中（**不会读到错误内容，只是永远回源**），
+    #    此时由 includes/template.php 里的第 2 层兜底读盘，仍是 1 个进程 × 约 3 ms。
+    # ============================================================
+
+    # ---- 首页（无参数）----
+    RewriteCond %{REQUEST_METHOD} =GET
+    # 静态直出总闸：c/.lock 存在（访问密码开启 / 后台关掉页面静态化 / 磁盘进保护模式）时，
+    # 下面这条静态规则整个失效，请求落回 PHP —— 绝不让 rewrite 绕过 requireAccess()。
+    # ⚠ Apache 只认「行首 #」为注释，这一条绝不能挪到 RewriteCond 行尾。
+    RewriteCond %{DOCUMENT_ROOT}/c/.lock !-f
+    RewriteCond %{DOCUMENT_ROOT}/c/%{TIME_YMD}-%{TIME_HOUR}/index.html -f
+    RewriteRule ^index\.php$ c/%{TIME_YMD}-%{TIME_HOUR}/index.html [L]
+
+    # ---- 首页（指定数据源）----
+    RewriteCond %{REQUEST_METHOD} =GET
+    RewriteCond %{QUERY_STRING} ^source=(\d+)$
+    # 静态直出总闸：c/.lock 存在（访问密码开启 / 后台关掉页面静态化 / 磁盘进保护模式）时，
+    # 下面这条静态规则整个失效，请求落回 PHP —— 绝不让 rewrite 绕过 requireAccess()。
+    # ⚠ Apache 只认「行首 #」为注释，这一条绝不能挪到 RewriteCond 行尾。
+    RewriteCond %{DOCUMENT_ROOT}/c/.lock !-f
+    RewriteCond %{DOCUMENT_ROOT}/c/%{TIME_YMD}-%{TIME_HOUR}/index-%1.html -f
+    RewriteRule ^index\.php$ c/%{TIME_YMD}-%{TIME_HOUR}/index-%1.html [L]
+
+    # ---- 列表页（source + type + page 齐全）----
+    RewriteCond %{REQUEST_METHOD} =GET
+    RewriteCond %{QUERY_STRING} ^source=(\d+)&type=(\d+)&page=(\d+)$
+    # 静态直出总闸：c/.lock 存在（访问密码开启 / 后台关掉页面静态化 / 磁盘进保护模式）时，
+    # 下面这条静态规则整个失效，请求落回 PHP —— 绝不让 rewrite 绕过 requireAccess()。
+    # ⚠ Apache 只认「行首 #」为注释，这一条绝不能挪到 RewriteCond 行尾。
+    RewriteCond %{DOCUMENT_ROOT}/c/.lock !-f
+    RewriteCond %{DOCUMENT_ROOT}/c/%{TIME_YMD}-%{TIME_HOUR}/list-%1-%2-%3.html -f
+    RewriteRule ^list\.php$ c/%{TIME_YMD}-%{TIME_HOUR}/list-%1-%2-%3.html [L]
+
+    # ---- 列表页（缺 page → 按第 1 页兜底；对应分类 chip 链接 list.php?source=X&type=Y）----
+    RewriteCond %{REQUEST_METHOD} =GET
+    RewriteCond %{QUERY_STRING} ^source=(\d+)&type=(\d+)$
+    # 静态直出总闸：c/.lock 存在（访问密码开启 / 后台关掉页面静态化 / 磁盘进保护模式）时，
+    # 下面这条静态规则整个失效，请求落回 PHP —— 绝不让 rewrite 绕过 requireAccess()。
+    # ⚠ Apache 只认「行首 #」为注释，这一条绝不能挪到 RewriteCond 行尾。
+    RewriteCond %{DOCUMENT_ROOT}/c/.lock !-f
+    RewriteCond %{DOCUMENT_ROOT}/c/%{TIME_YMD}-%{TIME_HOUR}/list-%1-%2-1.html -f
+    RewriteRule ^list\.php$ c/%{TIME_YMD}-%{TIME_HOUR}/list-%1-%2-1.html [L]
+
+    # ---- 播放页 ----
+    RewriteCond %{REQUEST_METHOD} =GET
+    RewriteCond %{QUERY_STRING} ^source=(\d+)&id=(\d+)$
+    # 静态直出总闸：c/.lock 存在（访问密码开启 / 后台关掉页面静态化 / 磁盘进保护模式）时，
+    # 下面这条静态规则整个失效，请求落回 PHP —— 绝不让 rewrite 绕过 requireAccess()。
+    # ⚠ Apache 只认「行首 #」为注释，这一条绝不能挪到 RewriteCond 行尾。
+    RewriteCond %{DOCUMENT_ROOT}/c/.lock !-f
+    RewriteCond %{DOCUMENT_ROOT}/c/%{TIME_YMD}-%{TIME_HOUR}/play-%1-%2.html -f
+    RewriteRule ^play\.php$ c/%{TIME_YMD}-%{TIME_HOUR}/play-%1-%2.html [L]
+
+    # ---- 历史页（纯壳，与会话无关）----
+    RewriteCond %{REQUEST_METHOD} =GET
+    # 静态直出总闸：c/.lock 存在（访问密码开启 / 后台关掉页面静态化 / 磁盘进保护模式）时，
+    # 下面这条静态规则整个失效，请求落回 PHP —— 绝不让 rewrite 绕过 requireAccess()。
+    # ⚠ Apache 只认「行首 #」为注释，这一条绝不能挪到 RewriteCond 行尾。
+    RewriteCond %{DOCUMENT_ROOT}/c/.lock !-f
+    RewriteCond %{DOCUMENT_ROOT}/c/%{TIME_YMD}-%{TIME_HOUR}/history.html -f
+    RewriteRule ^history\.php$ c/%{TIME_YMD}-%{TIME_HOUR}/history.html [L]
+
+    RewriteCond %{REQUEST_METHOD} =GET
+    RewriteCond %{QUERY_STRING} ^source=(\d+)$
+    # 静态直出总闸：c/.lock 存在（访问密码开启 / 后台关掉页面静态化 / 磁盘进保护模式）时，
+    # 下面这条静态规则整个失效，请求落回 PHP —— 绝不让 rewrite 绕过 requireAccess()。
+    # ⚠ Apache 只认「行首 #」为注释，这一条绝不能挪到 RewriteCond 行尾。
+    RewriteCond %{DOCUMENT_ROOT}/c/.lock !-f
+    RewriteCond %{DOCUMENT_ROOT}/c/%{TIME_YMD}-%{TIME_HOUR}/history-%1.html -f
+    RewriteRule ^history\.php$ c/%{TIME_YMD}-%{TIME_HOUR}/history-%1.html [L]
 </IfModule>
+
+# ============================================================
+# 四、静态缓存目录的兜底（极致低功耗模式）
+# ============================================================
+# c/ 与 static/imgcache/ 都不希望被列目录（前者是按时间桶复制出来的同一份 HTML）
+<IfModule mod_autoindex.c>
+    Options -Indexes
+</IfModule>
+
+# 错误日志落到 runtime/（.user.ini 已经写了同一份；这里兜住 mod_php 主机）。
+# 必须配合 includes/guard.php 的 2 MB 截断 —— 只开 log_errors 不做截断，
+# 等于「修好了显示问题却造了个日志炸弹」。
+<IfModule php_module>
+    php_flag display_errors off
+    php_flag log_errors on
+    php_value error_log runtime/php-errors.log
+</IfModule>
+<IfModule mod_php.c>
+    php_flag display_errors off
+    php_flag log_errors on
+    php_value error_log runtime/php-errors.log
+</IfModule>
+# 说明：PHP 8 的 Apache 模块标识是 php_module（Debian/Ubuntu 的 LoadModule 名），
+# 老教程里写的 mod_php.c 在部分发行版上匹配不到。两个块各包一次，
+# 谁匹配谁生效，都不匹配（CGI/FPM 主机）就由 .user.ini 与 includes/guard.php 接手。
 
 # ============================================================
 # 二、静态资源缓存（免费虚拟空间方案）

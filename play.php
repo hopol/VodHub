@@ -21,6 +21,9 @@ require_once __DIR__ . '/includes/template.php';
 
 requireAccess();
 
+// 支柱六：播放页每个请求还会跟一次上游 detail，30 次/分钟/IP 兜底
+guardCheck('play', 30);
+
 $sourceId = intval($_GET['source'] ?? 0);
 $vodId    = intval($_GET['id'] ?? 0);
 
@@ -42,6 +45,7 @@ if (!$source || !$detail) {
         'source'    => null,
         'sourceId'  => $sourceId,
         'vodId'     => $vodId,
+        'enrichPending' => false,          // 空详情页没有可富化的东西
         'detail'    => null,
         'name'      => '影片不存在',
         'pic'       => '',
@@ -70,6 +74,11 @@ if ($enrich === []) {
 }
 
 $meta    = buildMeta($detail, $sourceId, $types, $enrich);
+
+// 支柱三：富化结果**已在缓存里**时，首屏直接就是归一化的字段，
+// 于是不再让浏览器去请求 enrich.php（那是一次纯浪费的 EP —— 数据早就在
+// 服务端手上了）。只有真的没有可用缓存时才标 pending，由 app.js 异步回填。
+$enrichPending = ($enrich === null);
 $name    = $meta['name'] !== '' ? $meta['name'] : cleanTitle($detail['vod_name'] ?? '');
 $pic     = $meta['pic'];
 $typeName = typeName($types, intval($detail['type_id'] ?? 0));
@@ -83,6 +92,7 @@ renderTemplate('play', [
     'source'    => $source,
     'sourceId'  => $sourceId,
     'vodId'     => $vodId,
+    'enrichPending' => $enrichPending,
     'detail'    => $detail,
     'name'      => $name,
     'pic'       => $pic,

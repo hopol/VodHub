@@ -26,14 +26,30 @@
     }
 
     // ---------------------------------------------------------------- 破图兜底
+    // 分两步走：上游抖一下不该直接表现为「整页一排相同的占位图」。
+    //   第 1 次失败 → 记下原地址，2 秒后带一个新 query 重试（绕开浏览器自己的失败缓存）
+    //   第 2 次失败 → 才换成占位图；占位图本身由 .htaccess 缓存 30 天，不会被反复请求
+    // 换占位图之前原始 URL 一直保留在 data-orig-src 上，方便排查是哪个源在裂。
     document.addEventListener('error', function (e) {
         var target = e.target;
-        if (target && target.tagName === 'IMG') {
-            var src = target.getAttribute('src') || '';
-            if (src.indexOf('no-cover.svg') === -1) {
-                target.setAttribute('src', 'static/img/no-cover.svg');
-            }
+        if (!target || target.tagName !== 'IMG') return;
+
+        var src = target.getAttribute('src') || '';
+        if (!src || src.indexOf('no-cover.svg') !== -1) return;
+
+        if (!target.getAttribute('data-retried')) {
+            var original = target.getAttribute('data-orig-src') || src;
+            target.setAttribute('data-orig-src', original);
+            target.setAttribute('data-retried', '1');
+            setTimeout(function () {
+                target.setAttribute(
+                    'src',
+                    original + (original.indexOf('?') >= 0 ? '&' : '?') + 'r=' + Date.now()
+                );
+            }, 2000);
+            return;
         }
+        target.setAttribute('src', 'static/img/no-cover.svg');
     }, true);
 
     // ---------------------------------------------------------------- 播放页字段归一化
@@ -41,7 +57,10 @@
     // （地区/语言归一、主类型、更新状态、内容分级）。命中缓存时几乎瞬时返回。
     // 失败一律静默 —— 页面上的原始字段本身就是完整可用的展示。
     (function () {
-        var box = document.getElementById('detailMeta') || document.getElementById('playSide');
+        // 只在「服务端确实没有富化缓存」时才发请求（容器上是 data-enrich="pending"）。
+        // 缓存命中时 play.php 已经把归一化字段直接渲染进首屏了 ——
+        // 再发一次 enrich.php 就是白扔一个 EP，因为数据早就在服务端手上。
+        var box = document.querySelector('[data-enrich="pending"]');
         if (!box) return;
 
         var qs = new URLSearchParams(window.location.search);

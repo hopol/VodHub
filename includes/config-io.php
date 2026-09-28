@@ -15,6 +15,8 @@ require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/functions.php';
 require_once __DIR__ . '/enrich.php';
+require_once __DIR__ . '/pagecache.php';   // 清页面静态缓存 c/
+require_once __DIR__ . '/imgcache.php';    // 清图片本地缓存 static/imgcache/
 
 /** 配置文件格式版本。破坏性改动时 +1，导入按此拒收不认识的版本 */
 const CONFIG_FORMAT   = 'vodhub-config';
@@ -146,9 +148,12 @@ function opcacheReset(): array {
  * @param bool $api      清 runtime/cache/*.json（接口响应）
  * @param bool $enrich   清 enrich 表（字段归一化记录）
  * @param bool $opcache  重置 PHP 脚本缓存
+ * @param bool $page     清 c/ 页面静态缓存（极致低功耗 · 支柱一）
+ * @param bool $img      清 static/imgcache/ 图片本地缓存（支柱二）
  * @return string 汇报消息
  */
-function clearSystemCache(bool $api, bool $enrich, bool $opcache): string {
+function clearSystemCache(bool $api, bool $enrich, bool $opcache,
+                          bool $page = false, bool $img = false): string {
     $parts = [];
 
     if ($api) {
@@ -168,6 +173,18 @@ function clearSystemCache(bool $api, bool $enrich, bool $opcache): string {
     if ($enrich) {
         enrichClearCache();
         $parts[] = '归一化记录已清';
+    }
+
+    if ($page) {
+        $n = pcCount();
+        pcClear();
+        $parts[] = '页面静态缓存 ' . $n . ' 个 HTML';
+    }
+
+    if ($img) {
+        $bytes = imgCacheBytes();
+        guardClearFiles(IMG_CACHE_DIR);
+        $parts[] = '图片本地缓存（' . bytesHuman($bytes) . '）';
     }
 
     if ($opcache) {

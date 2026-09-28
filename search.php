@@ -10,6 +10,11 @@ require_once __DIR__ . '/includes/template.php';
 
 requireAccess();
 
+// 支柱六：搜索是最容易被爬虫放大的入口（每次搜索 = 1 个 EP + 1 次上游调用）。
+// 20 次/分钟/IP 对真人绰绰有余；超限返回 429 而不是 503，
+// 日志里就能分清「被限流」和「EP 打满」。
+guardCheck('search', 20);
+
 $wd       = trim((string) ($_GET['wd'] ?? ''));
 $sourceId = intval($_GET['source'] ?? 0);
 $page     = max(1, intval($_GET['page'] ?? 1));

@@ -4,6 +4,7 @@
  */
 
 require_once __DIR__ . '/../config.php';
+require_once __DIR__ . '/imgcache.php';   // coverUrl() 要判断本地是否已有该图
 
 if (!function_exists('h')) {
     /** HTML 转义，防止 XSS */
@@ -144,8 +145,15 @@ function renderPagination(int $page, int $pagecount, string $baseUrl): string {
 /**
  * 取封面图地址
  *
- * 若该数据源开启了图片代理，则改走本地 img.php 转发（绕过上游防盗链）；
- * 未开启则直接返回原始地址。
+ * 三级策略（极致低功耗模式 · 支柱二）：
+ *   1) 该源未开图片代理 → 直接返回上游原始地址（浏览器直连，本站零开销）
+ *   2) 开了代理，且本地已有副本 → 直出 static/imgcache/<hash>.<ext>
+ *      Apache 静态服务：**0 EP、0 出站**，这是本函数存在的全部意义
+ *   3) 开了代理，本地还没有 → 走 img.php（第一次会完成 SSRF 三重校验、
+ *      带 Referer 取图并落盘；此后这张图一生只产生 1 次 EP）
+ *
+ * 代理功能 100% 保留：防盗链照样绕过（图已在本站域下）、Referer 照样带上、
+ * SSRF 三重校验照样执行 —— 只是从「每次」变成「首次」。
  *
  * @param string|null $pic      原始图片地址
  * @param int         $sourceId 该条数据所属的数据源 id，0 表示不走代理
@@ -161,6 +169,10 @@ function coverUrl(?string $pic, int $sourceId = 0): string {
         $stmt->execute([$sourceId]);
         $row = $stmt->fetch();
         if ($row && (int) $row['img_proxy'] === 1) {
+            $local = imgCacheHit($pic);
+            if ($local !== null) {
+                return $local;   // ← 已本地化：Apache 静态直出，0 EP
+            }
             return 'img.php?u=' . rawurlencode($pic) . '&s=' . $sourceId;
         }
     }

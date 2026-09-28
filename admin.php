@@ -573,6 +573,19 @@ $editingGroup = $editGid > 0 ? getGroup($editGid) : null;
                     手机端始终自适应，不受此设置影响。
                 </small>
             </label>
+            <label class="field">
+                <span>容量档位（极致低功耗）</span>
+                <select name="lowpower_tier">
+                    <?php $curTier = (string) setting('lowpower_tier', 'auto'); ?>
+                    <option value="auto" <?= $curTier === 'auto' ? 'selected' : '' ?>>自动探测</option>
+                    <option value="compact" <?= $curTier === 'compact' ? 'selected' : '' ?>>紧凑（1 GB 空间）</option>
+                    <option value="standard" <?= $curTier === 'standard' ? 'selected' : '' ?>>标准（5 GB 及以上空间）</option>
+                </select>
+                <small class="muted">
+                    决定页面缓存、图片缓存、接口缓存的硬上限：紧凑档合计约 132 MB，标准档约 387 MB。
+                    <b>磁盘 ≤1 GB 请选「紧凑」</b> —— 不少主机的自动探测拿到的是整机磁盘而不是你的配额。
+                </small>
+            </label>
             <label class="field field-check">
                 <input type="checkbox" name="enrich_enabled" value="1" <?= $enrichEnabled ? 'checked' : '' ?>>
                 <span>播放页字段智能归一化（TypeSafe）</span>
@@ -588,7 +601,30 @@ $editingGroup = $editGid > 0 ? getGroup($editGid) : null;
             <button class="btn btn-primary" type="submit">保存</button>
         </form>
 
-        <?php $cacheStat = cacheStats(); $opInfo = opcacheInfo(); ?>
+        <?php
+        $cacheStat = cacheStats(); $opInfo = opcacheInfo();
+        $disk = guardDisk(); $caps = guardCaps();
+        ?>
+        <h3 class="admin-subtitle">🔋 极致低功耗状态</h3>
+        <p class="muted">
+            磁盘可用 <b><?= round($disk['pct'], 1) ?>%</b>
+            （<?= h(bytesHuman($disk['free'])) ?> / <?= h(bytesHuman($disk['total'])) ?>）；
+            当前档位 <b><?= h($caps['tier']) ?></b>
+            <?php if (($caps['pct'] ?? 100) < GUARD_REDLINE): ?>
+                <span class="alert alert-error" style="padding:2px 6px">低于 <?= GUARD_REDLINE ?>% 红线，已停止写入页面与图片缓存</span>
+            <?php endif; ?>
+            ；本档上限：页面缓存 <b><?= intval($caps['page_files']) ?> 个 / <?= round($caps['page_bytes'] / 1048576) ?> MB</b>、
+            图片缓存 <b><?= round($caps['img_bytes'] / 1048576) ?> MB</b>、
+            接口缓存 <b><?= intval($caps['cache_files']) ?> 个 / <?= round($caps['cache_bytes'] / 1048576) ?> MB</b>。
+        </p>
+        <p class="muted">
+            页面静态缓存 <b><?= pcCount() ?> 个 HTML</b>；
+            图片本地缓存 <b><?= h(bytesHuman(imgCacheBytes())) ?></b>；
+            页面静态化 <b><?= pcEnabled() ? '已启用' : '未启用' ?></b>
+            <?= setting('access_enabled') === '1' ? '（已开启访问密码 → 按安全要求自动停用）' : '' ?>
+            —— 每小时自动换桶过期，配置变更时全量作废，超过 2 小时的桶自动回收。
+        </p>
+
         <h3 class="admin-subtitle">🧹 系统缓存</h3>
         <p class="muted">
             接口缓存 <b><?= $cacheStat['files'] ?> 个文件 / <?= h($cacheStat['size']) ?></b>；
@@ -601,7 +637,7 @@ $editingGroup = $editGid > 0 ? getGroup($editGid) : null;
         </p>
 
         <form class="admin-form" method="post" action="admin.php"
-              onsubmit="return confirm('确定清理勾选的缓存吗？接口缓存与归一化记录清掉后会重新请求上游。')">
+              onsubmit="return confirm('确定清理勾选的缓存吗？接口缓存与归一化记录清掉后会重新请求上游，页面与图片缓存清掉后会在下次访问时重新生成。')">
             <input type="hidden" name="action" value="clear_cache">
             <label class="field-check">
                 <input type="checkbox" name="clear_api" value="1" checked>
@@ -614,6 +650,14 @@ $editingGroup = $editGid > 0 ? getGroup($editGid) : null;
             <label class="field-check">
                 <input type="checkbox" name="clear_opcache" value="1" checked>
                 <span><b>OPcache（PHP 脚本缓存）</b> —— 上传文件后前台没变化，就是它在跑旧代码</span>
+            </label>
+            <label class="field-check">
+                <input type="checkbox" name="clear_page" value="1">
+                <span>页面静态缓存（<code>c/&lt;时间桶&gt;/*.html</code>）—— 改完样式/模板没变化时勾上</span>
+            </label>
+            <label class="field-check">
+                <input type="checkbox" name="clear_img" value="1">
+                <span>图片本地缓存（<code>static/imgcache/</code>）—— 封面需要重新从上游取时勾上</span>
             </label>
             <input type="hidden" name="csrf" value="<?= csrfToken() ?>">
             <button class="btn btn-danger" type="submit">清理系统缓存</button>

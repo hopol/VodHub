@@ -36,7 +36,8 @@
            data-id="<?= $vid ?>" data-name="<?= h($name) ?>" data-pic="<?= h($pic) ?>"
            data-s="<?= h(searchHaystack($item)) ?>">
             <div class="cover">
-                <img src="<?= h($pic) ?>" alt="<?= h($name) ?>" loading="lazy">
+                <img src="<?= h($pic) ?>" alt="<?= h($name) ?>" loading="lazy" decoding="async"
+                     referrerpolicy="no-referrer">
                 <?php if ($badge !== ''): ?>
                     <span class="badge-time bili-remarks"><?= h($badge) ?></span>
                 <?php endif; ?>

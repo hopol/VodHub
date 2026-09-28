@@ -17,7 +17,9 @@ require_once __DIR__ . '/header.php';
     <?php foreach ($sources as $src): ?>
         <?php
         $client = new VodClient($src['api_url']);
-        $types = $client->getTypes();
+        $types = $client->getTypesLocal();   // 只读本地分类缓存，永不出站 —— 首页对每个源都要取一次分类，
+        // 串行冷缓存最坏 N × 4 s（改前 N × 12 s），5 个源就可能超过网关超时；
+        // 分类 24 小时不变，显示旧一点无感
         $sid = intval($src['id']);
         ?>
         <section class="source-block">

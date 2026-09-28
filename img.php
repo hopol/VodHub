@@ -41,6 +41,23 @@ if (!str_starts_with($lead, '<?php') && !str_starts_with($lead, '<?=')) {
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/includes/db.php';
 require_once __DIR__ . '/includes/functions.php';
+require_once __DIR__ . '/includes/guard.php';      // 磁盘 GC + 按 IP 限流
+require_once __DIR__ . '/includes/imgcache.php';   // 本地图片副本（支柱二）
+
+/**
+ * 统一错误出口：**所有 4xx/5xx 一律 no-store**。
+ *
+ * 否则浏览器的启发式缓存、或 .htaccess 里按 Content-Type 生效的 ExpiresByType
+ * 可能把故障页「保鲜」30 天 —— 表现就是封面莫名其妙地长期全裂，极难排查。
+ */
+function imgFail(int $code, string $msg): void {
+    http_response_code($code);
+    if (!headers_sent()) {
+        header('Cache-Control: no-store, no-cache, must-revalidate');
+        header('Pragma: no-cache');
+    }
+    exit($msg);
+}
 
 /**
  * 按字面 '&' 切分 QUERY_STRING 取参数。
@@ -75,14 +92,19 @@ header('X-Img-Proxy: ' . IMG_PROXY_VER);
 // 不用 $_GET：PHP 按 ini 的 arg_separator.input 切分查询串，该值因主机而异。
 // 实测 arg_separator.input=';' 时，s 会整个丢掉（u 的值里反而带着 &s=1），
 // 表现就是老代码那句笼统的 proxy disabled —— 图片全裂却查不出原因。
+// 支柱六：按 IP 限流（默认 120 次/分钟，一个列表页 20 张图绰绰有余）。
+// 超限返回 429 而不是 503 —— 日志里才能分清「被限流」和「EP 打满」。
+guardCheck('img', 120);
+// 顺带做磁盘 GC（内部按 5 分钟节流）
+guardTick();
+
 $qs     = (string) ($_SERVER['QUERY_STRING'] ?? '');
 $raw    = imgQs($qs, 'u');
 $srcId  = intval(imgQs($qs, 's'));
 if ($raw === '' && isset($_GET['u'])) { $raw = (string) $_GET['u']; }  // 兜底
 
 if ($raw === '') {
-    http_response_code(400);
-    exit('missing url');
+    imgFail(400, 'missing url');
 }
 
 // 万一 s 被并进了 u 的值（arg_separator.input 异常时会出现），这里再拆出来。
@@ -93,14 +115,12 @@ if ($srcId <= 0 && preg_match('/^(.*?)&(?:amp;)?s=(\d+)/', $raw, $m)) {
 $src = str_contains($raw, '://') ? $raw : rawurldecode($raw);
 $parts = parse_url($src);
 if ($parts === false || empty($parts['host']) || empty($parts['scheme'])) {
-    http_response_code(400);
-    exit('invalid url');
+    imgFail(400, 'invalid url');
 }
 
 $scheme = strtolower((string) $parts['scheme']);
 if (!in_array($scheme, ['http', 'https'], true)) {
-    http_response_code(400);
-    exit('scheme not allowed');
+    imgFail(400, 'scheme not allowed');
 }
 
 $host = strtolower((string) $parts['host']);
@@ -109,17 +129,14 @@ $host = strtolower((string) $parts['host']);
 // 三种失败原因分开报，避免再出现「只知道没开、不知道是缺参数还是真没开」
 // —— 同一句 proxy disabled 曾让人分不清是 s 丢了，还是这个源确实没勾选。
 if ($srcId <= 0) {
-    http_response_code(400);
-    exit('missing source param (s)');
+    imgFail(400, 'missing source param (s)');
 }
 $source = getSource($srcId);
 if (!$source) {
-    http_response_code(404);
-    exit('source not found (s=' . $srcId . ')');
+    imgFail(404, 'source not found (s=' . $srcId . ')');
 }
 if ((int) ($source['img_proxy'] ?? 0) !== 1) {
-    http_response_code(403);
-    exit('proxy disabled for source ' . $srcId . ' [' . $source['name'] . ']');
+    imgFail(403, 'proxy disabled for source ' . $srcId . ' [' . $source['name'] . ']');
 }
 
 $allowed = array_filter(array_map('trim', explode(',', strtolower((string) $source['img_hosts']))));
@@ -139,29 +156,43 @@ if ($allowed) {
         }
     }
     if (!$hostOk) {
-        http_response_code(403);
-        exit('host not allowed');
+        imgFail(403, 'host not allowed');
     }
+}
+
+// --- 1.5 本地已有副本 → 直接回吐，不做 DNS、不出站 ---
+// 这张图此前必然通过了下面完整的三重校验（文件只能由通过校验的 URL 生成），
+// 且这里**不发起任何新请求**，所以即使域名此后被改指向内网也不会造成 SSRF ——
+// 只是回吐已经下载好的字节。这是支柱二在 img.php 这一侧的收口。
+$localRel  = imgCacheHit($src);              // 可能带任意已知扩展名，不能只认 exact
+$localFile = $localRel !== null ? __DIR__ . '/' . $localRel : '';
+if ($localFile !== '' && is_file($localFile)) {
+    $localType = imgCacheMimeForPath($localFile);
+    while (ob_get_level() > 0) { @ob_end_clean(); }
+    header('Content-Type: ' . $localType);
+    header('Content-Length: ' . (string) filesize($localFile));
+    header('Cache-Control: public, max-age=604800');
+    header('X-Content-Type-Options: nosniff');
+    header('X-Img-Proxy: ' . IMG_PROXY_VER . '-local');
+    readfile($localFile);
+    exit;
 }
 
 // --- 2. 内网 / 保留地址拦截（白名单被误配的兜底） ---
 if (filter_var($host, FILTER_VALIDATE_IP)) {
     if (!filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
-        http_response_code(403);
-        exit('private address blocked');
+        imgFail(403, 'private address blocked');
     }
 } else {
     // 域名先解析，再校验 IP，防止通过域名解析到内网
     $ips = @gethostbynamel($host);
     if (empty($ips)) {
-        http_response_code(502);
-        exit('resolve failed');
+        imgFail(502, 'resolve failed');
     }
     foreach ($ips as $ip) {
         if (!filter_var($ip, FILTER_VALIDATE_IP,
                 FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
-            http_response_code(403);
-            exit('private address blocked');
+            imgFail(403, 'private address blocked');
         }
     }
 }
@@ -176,8 +207,10 @@ $ch = curl_init();
 curl_setopt_array($ch, [
     CURLOPT_URL            => $src,
     CURLOPT_RETURNTRANSFER => true,
-    CURLOPT_TIMEOUT        => 12,
-    CURLOPT_CONNECTTIMEOUT => 6,
+    // 支柱四：12 s → 4 s。图片请求是全站最高频的，慢 8 秒换不到任何好处，
+    // 只会白占 EP 槽位（EP 是并发计数，槽位被占越久越容易触顶）。
+    CURLOPT_TIMEOUT        => 4,
+    CURLOPT_CONNECTTIMEOUT => 3,
     CURLOPT_FOLLOWLOCATION => true,
     CURLOPT_MAXREDIRS      => 3,
     CURLOPT_SSL_VERIFYPEER => false,
@@ -197,14 +230,12 @@ $type = (string) curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
 curl_close($ch);
 
 if ($body === false || $code !== 200 || $body === '') {
-    http_response_code(502);
-    exit('fetch failed');
+    imgFail(502, 'fetch failed');
 }
 
 // 只放行图片类响应，避免被当成内容入口
 if ($type !== '' && !str_starts_with($type, 'image/')) {
-    http_response_code(415);
-    exit('not an image');
+    imgFail(415, 'not an image');
 }
 if ($type === '') {
     $type = 'image/jpeg';
@@ -213,6 +244,11 @@ if ($type === '') {
 // 自动学习：把本次实际用到的图片域名记进白名单，便于后台查看，
 // 也便于以后改成"白名单加严"模式。已存在则不动，不影响已有配置。
 learnImgHost((int) $source['id'], $host);
+
+// 支柱二：把代理结果落盘。下一次 coverUrl() 就会直出 static/imgcache/...，
+// 这张图一生只产生这一次 EP。落盘失败（磁盘满/无权限）静默 ——
+// 本次照常返回图片字节，功能不受影响，只是没能本地化。
+imgCachePut($src, $body, $type);
 
 // 缓存 7 天：图片基本不变，靠数据源开关控制是否走代理
 header('Content-Type: ' . $type);

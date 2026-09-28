@@ -16,6 +16,8 @@
 | 添加一个数据源 | [数据源接入](api-sources.md) |
 | 封面图挂了 / 有防盗链 | [数据源接入 · 图片代理](api-sources.md#图片代理与防盗链) |
 | 给某个源换一套显示风格 | [数据源接入 · 选模板](api-sources.md#选模板看封面比例) |
+| 部署在 1 GB / 5 GB 免费空间上 | [极致低功耗模式](lowpower.md) |
+| 想让配额（EP/磁盘）基本无感 | [极致低功耗模式](lowpower.md) |
 | 遇到问题了 | [故障排查](troubleshooting.md) |
 
 ## 我想改代码 / 做模板
@@ -35,6 +37,7 @@
 | [configuration.md](configuration.md) | 设置项含义、缓存策略、列数优先级、数据存在哪 |
 | [api-sources.md](api-sources.md) | 接口格式、地址怎么填、用哪些字段、封面比例、图片代理 |
 | [templates.md](templates.md) | 模板结构、可用变量、CSS 变量编辑器、从零做模板、常见坑 |
+| [lowpower.md](lowpower.md) | 极致低功耗模式：四层隔离、容量档位、水位红线、验证方法、已知边界 |
 | [troubleshooting.md](troubleshooting.md) | **按症状查**：白屏、图裂、模板不生效、后台报错、性能 |
 
 ---

@@ -47,6 +47,9 @@ foreach (['curl', 'pdo_sqlite'] as $requiredExt) {
 // 站点名称（显示在页面标题与页头）
 define('APP_NAME', '影视聚合站');
 
+// 版本号（与 CHANGELOG.md 保持一致）
+define('APP_VERSION', '1.3.0');
+
 // 运行数据目录（数据库、缓存，部署后需保证可写）
 define('DATA_DIR', __DIR__ . '/runtime');
 
@@ -62,6 +65,20 @@ define('CACHE_TTL', 1800);
 // 分类数据（ac=list）的缓存有效期：分类几乎不变，走长缓存以减少上游请求。
 // 列表/详情仍用 CACHE_TTL，两者分开是为了避免分类被短 TTL 拖累。
 define('CACHE_TTL_TYPE', 86400); // 24 小时
+
+// 上游失败的负缓存：失败后这段时间内**完全不出站**，
+// 直接用过期数据或空结果。这是消灭「上游一挂，每次点击白等 12 秒」
+// 这个故障放大器的关键 —— 没有它，故障期间每一次访问都在占 EP 槽位。
+define('CACHE_TTL_NEG', 60);
+
+// ---------------------------------------------------------------- 极致低功耗模式
+// 页面静态缓存目录。必须在站点根目录下（.htaccess 用相对路径 rewrite 到这里），
+// 不能放进 runtime/ —— runtime/ 被 .htaccess 整个 [F] 拦掉，静态文件会被挡在门外。
+define('PAGE_CACHE_DIR', __DIR__ . '/c');
+
+// 图片代理本地缓存目录。可被 Web 直接访问（.htaccess 只拦 runtime/ 与 templates/*.php），
+// 由 .htaccess 的 ExpiresByType image/* 享受 30 天缓存。
+define('IMG_CACHE_DIR', __DIR__ . '/static/imgcache');
 
 // 会话名称
 define('SESSION_NAME', 'vodsite_sid');

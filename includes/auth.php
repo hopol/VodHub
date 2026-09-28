@@ -5,11 +5,29 @@
 
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/functions.php';
+require_once __DIR__ . '/guard.php';   // 护栏（磁盘 GC + 限流），见 includes/guard.php
 
 function sessionStart(): void {
     if (session_status() === PHP_SESSION_NONE) {
         session_name(SESSION_NAME);
         session_start();
+    }
+}
+
+/**
+ * 释放会话锁。
+ *
+ * PHP 的 files 处理器会对会话文件加**排他锁**直到脚本结束，
+ * 包括持有到上游 curl 返回（最坏 12 秒）之后。同会话的第二个请求会被
+ * 串行阻塞 —— 而阻塞期间它照样算一个 EP。
+ *
+ * 鉴权判定完成后立刻关锁，锁持有时长从「整页」缩到约 1 ms。
+ * $_SESSION 数组在关闭后仍然可读，所以后续逻辑不受影响；
+ * POST/CSRF 路径若再需要写会话，csrfToken()/verifyCsrf() 会重新打开。
+ */
+function sessionRelease(): void {
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        @session_write_close();
     }
 }
 
@@ -24,7 +42,9 @@ function isAccessOk(): bool {
 
 /** 前台访问拦截：未通过则跳转登录页 */
 function requireAccess(): void {
+    guardTick();          // 顺带做磁盘 GC（内部按 5 分钟节流）
     if (isAccessOk()) {
+        sessionRelease(); // 鉴权通过 → 立刻放锁，别把锁拖到渲染与上游结束
         return;
     }
     $here = urlencode($_SERVER['REQUEST_URI'] ?? '/');
@@ -56,10 +76,12 @@ function isAdminOk(): bool {
 
 /** 后台访问拦截：未登录则显示登录表单 */
 function requireAdmin(): void {
+    guardTick();
     if (isAdminOk()) {
+        sessionRelease(); // 后台页面渲染本身很重，更不该全程持锁
         return;
     }
-    renderAdminLogin();
+    renderAdminLogin();   // 登录表单要 CSRF，这条路径不放锁
     exit;
 }
 

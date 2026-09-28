@@ -11,7 +11,8 @@
  */
 $ep = episodes(is_array($detail ?? null) ? $detail : [], intval($playCount ?? 0));
 ?>
-<aside class="play-side" id="playSide">
+<aside class="play-side" id="playSide"
+       data-enrich="<?= ($enrichPending ?? false) ? 'pending' : 'done' ?>">
     <h2 class="side-title">影片信息</h2>
     <dl class="info-list">
         <dt>编号</dt><dd><?= h($meta['vod_id']) ?></dd>

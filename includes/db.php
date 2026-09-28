@@ -4,6 +4,13 @@
  */
 
 require_once __DIR__ . '/../config.php';
+// 页面静态缓存：setSetting() 末尾要作废它。必须在顶层引入，否则
+// 「配置变了前台没反应」只在某些调用上下文里修好、另一些漏掉 —— 那是最难查的一类 bug。
+// pagecache.php 只依赖 config.php 与 guard.php，不依赖本文件，所以这里不会成环。
+require_once __DIR__ . '/pagecache.php';
+
+/** 目标 schema 版本。dbInit() 用它判断「是否已经完整初始化」。 */
+const DB_SCHEMA_VERSION = 5;
 
 /** 获取数据库连接（单例，自动建表） */
 function db(): PDO {
@@ -17,6 +24,21 @@ function db(): PDO {
     $pdo = new PDO('sqlite:' . DB_FILE);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+
+    // 支柱五 · SQLite 调优：
+    //   WAL      → 读写不再互斥，并发请求不再排队等写锁
+    //   NORMAL   → WAL 下官方推荐的 fsync 折中，大幅减少 I/O（免费主机按 I/O 计费）
+    //   busy_timeout → 把「立刻报 database is locked」变成「等 3 秒」，避免并发峰值 500
+    // 极少数共享主机不支持 WAL（journal_mode 会原样返回 delete），此时静默退回默认。
+    // 注意：WAL 会产生 data.db-wal / data.db-shm，面板备份时要连它们一起拷。
+    try {
+        $pdo->query('PRAGMA journal_mode = WAL');
+        $pdo->query('PRAGMA synchronous = NORMAL');
+        $pdo->query('PRAGMA busy_timeout = 3000');
+    } catch (Throwable $e) {
+        // 不支持就用默认模式，功能不受影响
+    }
+
     dbInit($pdo);
     return $pdo;
 }
@@ -105,6 +127,27 @@ function dbInit(PDO $pdo): void {
         setSetting('schema_version', '5');
     }
 
+    // ---------------------------------------------------------------- 短路
+    // 支柱五 · 收益最大的一处：已完整初始化的库直接返回，跳过下面的建表与默认值写入。
+    //
+    // 为什么要短路：$defaults 里有 password_hash(DEFAULT_ADMIN_PASSWORD, PASSWORD_DEFAULT)。
+    // bcrypt 是刻意慢的算法，⚙️ 实测单次 46.8 ms、占整个 dbInit()（50.7 ms）的 93%，
+    // 而这些键在安装后早已存在，下面的 ON CONFLICT DO NOTHING **一次都不会写入** ——
+    // 等于每个 PHP 请求白付 47 ms 纯 CPU（免费主机的共享 CPU 上可能是 100~250 ms），
+    // 而 img.php 这类高频入口同样要付。
+    //
+    // 判定必须放在**所有 schema 迁移之后**：放在前面会让未来的表结构升级静默失败。
+    // 这里只认「版本已到目标」+「管理密码键存在且非空」，任一不满足就走完整初始化
+    // （首次安装与老库升级路径完全不受影响）。
+    if ((int) setting('schema_version') >= DB_SCHEMA_VERSION) {
+        $chk = $pdo->prepare('SELECT value FROM settings WHERE key = ?');
+        $chk->execute(['admin_password']);
+        $hash = (string) $chk->fetchColumn();
+        if ($hash !== '') {
+            return;
+        }
+    }
+
     // 默认设置：不启用访问密码
     $defaults = [
         'access_enabled'   => '0',                       // 0=无需密码 1=需要密码
@@ -152,6 +195,13 @@ function setSetting(string $key, string $value): void {
         ON CONFLICT(key) DO UPDATE SET value = excluded.value');
     $stmt->execute([$key, $value]);
     setting(''); // 清空读取缓存
+
+    // 配置变更 → 页面静态缓存全量作废（顺带同步 c/.lock 总闸）。
+    // 这是「改了配置前台没反应」这个最伤体验 bug 的唯一可靠防线：
+    // .htaccess 读不到 SQLite（RewriteMap 在 .htaccess 中不可用），
+    // 所以只能由 PHP 主动删掉 c/。
+    // 顶层已 require pagecache.php，这里无条件调用 —— 不依赖调用上下文。
+    pcClear();
 }
 
 /** 取全部数据源（默认仅启用的） */

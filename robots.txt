@@ -1,0 +1,26 @@
+# VodHub 1.3.0 —— 极致低功耗模式
+#
+# 为什么拦这些：
+#   · /search.php   每次搜索 = 1 个 PHP 进程 + 1 次上游调用，且关键词不可预测，
+#                   爬虫可以无成本地把 EP 与 CPU 配额刷满
+#   · /list.php?    分页抓取（page=1..N × 多分类 × 多源）会产生大量进程与缓存文件，
+#                   而影视聚合站的分页对搜索流量价值有限、成本却真实
+#   · /img.php      图片代理是按需取图的端点，不该被当成资源目录抓
+#   · /admin.php    后台
+#
+# 保留放行的：首页与播放页 —— 这两类有 SEO 价值，且都已页面静态化，
+# 爬虫访问的成本约等于 0（Apache 直出，不起 PHP 进程）。
+User-agent: *
+Disallow: /search.php
+Disallow: /list.php?
+Disallow: /img.php
+Disallow: /admin.php
+Disallow: /enrich.php
+Disallow: /logout.php
+Allow: /
+
+# 静态缓存目录不希望被抓（里面是按时间桶复制出来的同一份 HTML）
+Disallow: /c/
+Disallow: /runtime/
+Disallow: /templates/
+Disallow: /static/imgcache/
