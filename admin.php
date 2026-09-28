@@ -11,6 +11,43 @@
  *   5. 渲染 HTML
  */
 
+// ---------------------------------------------------------------- 致命错误可见化
+// 必须在**任何 require 之前**注册 —— 它要接住的恰恰是 require 阶段的失败。
+//
+// 为什么需要它：生产环境 display_errors=Off（见 includes/guard.php），
+// 于是 PHP 致命错误不再打印，**页面会无声无息地截断** —— 后台看起来「正常打开」，
+// 但下半部分没了。最典型的后果就是「清理 OPcache 的按钮不见了」，
+// 而那个按钮正是「传了文件没变化」时唯一的救场工具。
+// 静默 + 命门重合，是最坏的一种故障形态，所以这里把它变成明确提示。
+register_shutdown_function(static function (): void {
+    $err = error_get_last();
+    if ($err === null) {
+        return;
+    }
+    if (!in_array((int) $err['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
+        return;   // 只接管致命错误；Warning/Notice 由正常错误通道处理
+    }
+    // 头早发了（已经吐出半截 HTML），也不能清缓冲 —— 保留已渲染部分才有诊断上下文。
+    // 在末尾追加一条浏览器仍会渲染的提示。
+    $esc = static fn (string $x): string => htmlspecialchars($x, ENT_QUOTES, 'UTF-8');
+    // 注意：HTML 属性里的双引号必须写成 \" —— 用单引号 PHP 串拼，避免转义踩坑。
+    echo "\n"
+       . '<div style="margin:24px auto;max-width:760px;padding:18px 20px;border:2px solid #c0392b;'
+       . 'border-radius:8px;background:#fff5f5;color:#7b241c;font:14px/1.75 -apple-system,system-ui,sans-serif">'
+       . '<div style="font-size:16px;font-weight:700;margin-bottom:8px">⛔ 后台在此处中断：PHP 致命错误</div>'
+       . '<code style="display:block;margin:6px 0 10px;padding:8px 10px;background:#fff;'
+       . 'border:1px solid #f5c6cb;border-radius:4px;white-space:pre-wrap;word-break:break-all">'
+       . $esc((string) $err['message']) . '</code>'
+       . '<div>位置：<code>' . $esc((string) $err['file']) . '</code> 第 <b>'
+       . (int) $err['line'] . '</b> 行</div>'
+       . '<div style="margin-top:10px"><b>最常见原因：升级包没有完整覆盖。</b>1.3.0 新增了 '
+       . '<code>includes/guard.php</code>、<code>includes/pagecache.php</code>、<code>includes/imgcache.php</code>，'
+       . '并且 <code>config.php</code> 也改过（新增 4 个常量）—— <b>43 个文件必须一次传完</b>，漏一个就会断在这里。</div>'
+       . '<div style="margin-top:6px">补齐这 43 个文件后，先清一次 OPcache 再刷新本页。'
+       . '详见升级包内的 <code>升级说明.md</code> 第二节。</div>'
+       . '</div>\n';
+});
+
 require_once __DIR__ . '/includes/auth.php';
 require_once __DIR__ . '/includes/client.php';
 require_once __DIR__ . '/includes/functions.php';
@@ -603,27 +640,72 @@ $editingGroup = $editGid > 0 ? getGroup($editGid) : null;
 
         <?php
         $cacheStat = cacheStats(); $opInfo = opcacheInfo();
-        $disk = guardDisk(); $caps = guardCaps();
+
+        // ---------------------------------------------------------------- 故障隔离
+        // 这一段依赖 1.3.0 新增的函数与常量，而它下面**紧跟着**「清理系统缓存 · OPcache」——
+        // 那是「传了文件没变化」时唯一的救场按钮。
+        //
+        // 所以：坏掉一个新功能可以接受，**把它一起带下水不行**。
+        // 只要文件没传齐（典型是漏了改过的 config.php），这里必须跳过而不是 fatal，
+        // 否则会出现「页面看着正常、但 OPcache 按钮整段消失」这种最难诊断的故障。
+        $lp      = null;
+        $lpWhy   = '';
+        try {
+            foreach (['guardDisk', 'guardCaps', 'pcCount', 'imgCacheBytes', 'pcEnabled', 'bytesHuman'] as $fn) {
+                if (!function_exists($fn)) {
+                    $lpWhy = '函数 ' . $fn . '() 不存在';
+                    break;
+                }
+            }
+            foreach (['PAGE_CACHE_DIR', 'IMG_CACHE_DIR', 'GUARD_REDLINE'] as $cn) {
+                if ($lpWhy === '' && !defined($cn)) {
+                    $lpWhy = '常量 ' . $cn . ' 未定义（config.php 是旧版）';
+                    break;
+                }
+            }
+            if ($lpWhy === '') {
+                $lp = [
+                    'disk'    => guardDisk(),
+                    'caps'    => guardCaps(),
+                    'pages'   => pcCount(),
+                    'imgs'    => imgCacheBytes(),
+                    'enabled' => pcEnabled(),
+                    'access'  => setting('access_enabled') === '1',
+                ];
+            }
+        } catch (Throwable $e) {
+            $lpWhy = $e->getMessage();
+        }
         ?>
+        <?php if ($lp !== null): ?>
         <h3 class="admin-subtitle">🔋 极致低功耗状态</h3>
         <p class="muted">
-            磁盘可用 <b><?= round($disk['pct'], 1) ?>%</b>
-            （<?= h(bytesHuman($disk['free'])) ?> / <?= h(bytesHuman($disk['total'])) ?>）；
-            当前档位 <b><?= h($caps['tier']) ?></b>
-            <?php if (($caps['pct'] ?? 100) < GUARD_REDLINE): ?>
+            磁盘可用 <b><?= round($lp['disk']['pct'], 1) ?>%</b>
+            （<?= h(bytesHuman((int) $lp['disk']['free'])) ?> / <?= h(bytesHuman((int) $lp['disk']['total'])) ?>）；
+            当前档位 <b><?= h((string) $lp['caps']['tier']) ?></b>
+            <?php if ((int) ($lp['caps']['pct'] ?? 100) < GUARD_REDLINE): ?>
                 <span class="alert alert-error" style="padding:2px 6px">低于 <?= GUARD_REDLINE ?>% 红线，已停止写入页面与图片缓存</span>
             <?php endif; ?>
-            ；本档上限：页面缓存 <b><?= intval($caps['page_files']) ?> 个 / <?= round($caps['page_bytes'] / 1048576) ?> MB</b>、
-            图片缓存 <b><?= round($caps['img_bytes'] / 1048576) ?> MB</b>、
-            接口缓存 <b><?= intval($caps['cache_files']) ?> 个 / <?= round($caps['cache_bytes'] / 1048576) ?> MB</b>。
+            ；本档上限：页面缓存 <b><?= intval($lp['caps']['page_files']) ?> 个 / <?= round($lp['caps']['page_bytes'] / 1048576) ?> MB</b>、
+            图片缓存 <b><?= round($lp['caps']['img_bytes'] / 1048576) ?> MB</b>、
+            接口缓存 <b><?= intval($lp['caps']['cache_files']) ?> 个 / <?= round($lp['caps']['cache_bytes'] / 1048576) ?> MB</b>。
         </p>
         <p class="muted">
-            页面静态缓存 <b><?= pcCount() ?> 个 HTML</b>；
-            图片本地缓存 <b><?= h(bytesHuman(imgCacheBytes())) ?></b>；
-            页面静态化 <b><?= pcEnabled() ? '已启用' : '未启用' ?></b>
-            <?= setting('access_enabled') === '1' ? '（已开启访问密码 → 按安全要求自动停用）' : '' ?>
+            页面静态缓存 <b><?= intval($lp['pages']) ?> 个 HTML</b>；
+            图片本地缓存 <b><?= h(bytesHuman((int) $lp['imgs'])) ?></b>；
+            页面静态化 <b><?= $lp['enabled'] ? '已启用' : '未启用' ?></b>
+            <?= $lp['access'] ? '（已开启访问密码 → 按安全要求自动停用）' : '' ?>
             —— 每小时自动换桶过期，配置变更时全量作废，超过 2 小时的桶自动回收。
         </p>
+        <?php else: ?>
+        <h3 class="admin-subtitle">🔋 极致低功耗状态</h3>
+        <p class="muted" style="color:#a94442">
+            ⚠️ 无法显示（<?= h($lpWhy) ?>）—— <b>升级包没有完整覆盖</b>。
+            1.3.0 新增了 <code>includes/guard.php</code>、<code>pagecache.php</code>、<code>imgcache.php</code>，
+            且 <code>config.php</code> 也改过，请把 <b>43 个文件一次传完</b>。
+            <b>本提示不影响下方「系统缓存」——那一段照常可用。</b>
+        </p>
+        <?php endif; ?>
 
         <h3 class="admin-subtitle">🧹 系统缓存</h3>
         <p class="muted">
