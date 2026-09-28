@@ -20,6 +20,24 @@ require_once __DIR__ . '/../config.php';
 // ⚠️ 不能在顶层 require db.php：db.php 会引入 pagecache.php，而后者引入本文件。
 // setting() 的调用点都在函数体内（GC 触发时才会走到），届时 db.php 必已加载。
 
+// ---------------------------------------------------------------- 常量兜底
+// 这两个常量是 1.3.0 在 config.php 里新增的。**升级包漏传 config.php 时，
+// 绝不能让前台直接 500** —— 一个「可选的性能优化」不该有把整站打死的权限。
+//
+// 实测复现（2026-09-28，线上 tv.ieo.de5.net）：config.php 是 1.2.0 旧版时，
+// renderTemplate() 第一行 pcSyncGate() 就抛 `Undefined constant "PAGE_CACHE_DIR"`，
+// 而 display_errors=Off 让它变成**空体 500** —— 静态文件全 200、admin 正常、
+// 只有 5 个前台页 500，极难从表象定位到「漏传一个配置文件」。
+//
+// 所以：新文件自带默认值，旧 config.php 降级为「无害」；
+// 后台的状态栏改用 APP_VERSION 判断（那个只有新版 config.php 才有）来提示补传。
+if (!defined('PAGE_CACHE_DIR')) {
+    define('PAGE_CACHE_DIR', dirname(__DIR__) . '/c');
+}
+if (!defined('IMG_CACHE_DIR')) {
+    define('IMG_CACHE_DIR', dirname(__DIR__) . '/static/imgcache');
+}
+
 // ---------------------------------------------------------------- 生产环境错误输出
 // 三层兜底，缺一层都可能失效：
 //   ① .user.ini     → 覆盖 CGI / FPM / LSAPI

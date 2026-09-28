@@ -24,6 +24,14 @@
 require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/functions.php';
 
+// 1.3.0 在 config.php 里新增的常量兜底 —— 升级包漏传 config.php 时，
+// 旧版没有它，而 request() 的负缓存分支每条失败请求都会读一次，
+// 不兜底就是「上游一挂、前台全 500」。同 guard.php 的理由：
+// 可选的优化常量不该有把整站打死的权限。
+if (!defined('CACHE_TTL_NEG')) {
+    define('CACHE_TTL_NEG', 60);
+}
+
 class VodClient {
     private string $baseUrl;
     /** 从未有过数据时的完整拉取超时 */

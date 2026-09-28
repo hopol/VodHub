@@ -138,7 +138,40 @@
 
 ### 修复
 
-- **后台「清理 OPcache」整段消失**（本次排查的主诉）。
+- **升级后首页 500（空响应体）—— 漏传 `config.php` 会打死整站前台。**
+  线上实测（`tv.ieo.de5.net`）：静态文件与 `/admin.php` 全 200、
+  `img.php` 返回正常的 400、`enrich.php` 返回 200，**唯独 5 个前台页
+  `index / list / search / play / history` 全是 500 + `Content-Length: 0`**。
+
+  根因：1.3.0 在 `config.php` 里新增了 4 个常量，而**线上那份还是 1.2.0 旧版**。
+  `renderTemplate()` 第一行 `pcSyncGate()` 读 `PAGE_CACHE_DIR` 直接抛
+  `Error: Undefined constant`；`display_errors=Off` 让它**不打印**，
+  于是变成空体 500 —— 既无报错文本也无半截页面，极难从表象定位到「漏传一个配置文件」。
+
+  **为什么只有那 5 个页挂**：只有它们走 `renderTemplate()`。
+  `img.php` 不走、`enrich.php` 只 require 不调用、`admin.php` 自己输出 HTML、
+  静态文件不进 PHP —— 这条差异就是判据。
+
+  本地完整复现并验证修复：
+
+  | config.php | 前台 5 页 | 后台状态栏 | OPcache 按钮 |
+  |---|---|---|---|
+  | 1.2.0 旧版（修复前） | **500 空体** | 段落整个消失 | **不见了** |
+  | 1.2.0 旧版（修复后） | **全部 200** | 「⚠️ 无法显示（config.php 是旧版…）」 | ✅ 在 |
+  | 1.3.0 新版 | 全部 200 | 正常显示 | ✅ 在 |
+
+  **修复原则：可选的性能优化，不该有把整站打死的权限。**
+  - `includes/guard.php` 自带 `PAGE_CACHE_DIR` / `IMG_CACHE_DIR` 默认值
+    （它被 pagecache 与 imgcache 共同依赖，放一处即覆盖两者）；
+  - `includes/client.php` 自带 `CACHE_TTL_NEG` 默认值 60 秒
+    （否则上游一挂、每条失败请求都读它 → 前台全 500）；
+  - 后台状态栏的判据改为 **`APP_VERSION`** —— 它**没有**兜底默认值，
+    只有新版 `config.php` 才 define，因此「漏传 config.php」依然会被提示出来，
+    只是从「致命」降级为「待补」。
+  - 静态化、图片本地化、限流、GC 在两种 `config.php` 下均验证工作正常
+    （生成 9 个 HTML / 3 个桶，二次访问 3/3 命中 0-EP）。
+
+（本次排查的主诉）。
   功能从未被删 —— `clear_opcache` 复选框那段在 v1.2.0→v1.3.0 的 diff 里
   是**未改动的上下文行**。真正的原因是**页面在到达它之前就断了，且被静默吞掉**：
   - 生产环境 `display_errors=Off`（`includes/guard.php` 会关掉它），

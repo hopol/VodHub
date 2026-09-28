@@ -36,6 +36,50 @@ tail -f runtime/php_errors.log    # 部分环境
 
 > ⚠️ 找到问题后请把 `display_errors` 关回 `0`，生产环境不该把错误暴露给访问者。
 
+### 升级 1.3.0 后首页 500（静态文件却正常）
+
+**现象**（2026-09-28 线上实测）：
+
+| 路径 | 结果 |
+|------|------|
+| `/static/style.css`、`/robots.txt` | ✅ 200 |
+| `/admin.php` | ✅ 200（能登录） |
+| `/img.php?u=&s=1` | ✅ 400 `missing url`（**这是正常响应**） |
+| `/enrich.php?...` | ✅ 200 JSON |
+| **`/index.php`、`/list.php`、`/search.php`、`/play.php`、`/history.php`** | 🔴 **500 + 空响应体** |
+
+**根因**：**`config.php` 还是 1.2.0 旧版** —— 1.3.0 给它新增了 4 个常量
+（`APP_VERSION`、`CACHE_TTL_NEG`、`PAGE_CACHE_DIR`、`IMG_CACHE_DIR`）。
+
+`renderTemplate()` 第一行 `pcSyncGate()` 要用 `PAGE_CACHE_DIR`，旧版没有 →
+`Error: Undefined constant "PAGE_CACHE_DIR"`；而 `display_errors=Off`
+让它**不打印**，于是变成「**500 + 空体**」—— 既没有报错文本，也没有半截页面。
+
+**为什么只有那 5 个页面挂**：只有它们走 `renderTemplate()`。
+`img.php` 不走、`enrich.php` 只 `require` 不调用、`admin.php` 自己输出 HTML、
+静态文件根本不进 PHP —— 所以它们全部正常。**这正是定位的关键线索。**
+
+**判别口诀**：
+
+> 静态文件 200 + 后台 200 + **只有前台页空体 500** ⇒ **先去补传 `config.php`**
+
+**怎么修**：
+
+```bash
+# 立刻恢复：只补这一个文件就够（根因就在它）
+# 从升级包把 config.php 覆盖到站点根，然后清一次 OPcache，刷新
+```
+
+**根治（1.3.0 后续已修）**：`includes/guard.php` 与 `includes/client.php`
+现在**自带这三个常量的默认值**，漏传 `config.php` 时前台**不再 500**，
+只是降级（容量档位与版本号读不到）；后台「极致低功耗状态」会显示
+「⚠️ 无法显示（config.php 是旧版…）」提示你补传。
+
+> **排查顺序建议**：先看静态文件与后台是否正常 —— 如果它们也 500，
+> 那问题在 `.htaccess`（比对包里的版本）；如果只有前台挂，就是 `config.php`。
+
+---
+
 ### 报 `foreach() argument must be of type array|object`
 
 某个函数把非数组传给了 `foreach`。**看完整报错里的文件名和行号**，那一行就是问题所在。

@@ -657,11 +657,11 @@ $editingGroup = $editGid > 0 ? getGroup($editGid) : null;
                     break;
                 }
             }
-            foreach (['PAGE_CACHE_DIR', 'IMG_CACHE_DIR', 'GUARD_REDLINE'] as $cn) {
-                if ($lpWhy === '' && !defined($cn)) {
-                    $lpWhy = '常量 ' . $cn . ' 未定义（config.php 是旧版）';
-                    break;
-                }
+            // 用 APP_VERSION 判「config.php 是不是新版」——它**没有**兜底默认值，
+            // 只有 1.3.0 的 config.php 才 define 它。其余常量已在 guard/client 里
+            // 自带默认值（漏传 config.php 不再让前台 500），所以不再拿它们当判据。
+            if ($lpWhy === '' && !defined('APP_VERSION')) {
+                $lpWhy = 'config.php 是旧版（缺 APP_VERSION 等 1.3.0 新常量）';
             }
             if ($lpWhy === '') {
                 $lp = [
@@ -701,9 +701,11 @@ $editingGroup = $editGid > 0 ? getGroup($editGid) : null;
         <h3 class="admin-subtitle">🔋 极致低功耗状态</h3>
         <p class="muted" style="color:#a94442">
             ⚠️ 无法显示（<?= h($lpWhy) ?>）—— <b>升级包没有完整覆盖</b>。
-            1.3.0 新增了 <code>includes/guard.php</code>、<code>pagecache.php</code>、<code>imgcache.php</code>，
-            且 <code>config.php</code> 也改过，请把 <b>43 个文件一次传完</b>。
-            <b>本提示不影响下方「系统缓存」——那一段照常可用。</b>
+            1.3.0 的 <code>config.php</code> 新增了 4 个常量（<code>APP_VERSION</code>、
+            <code>CACHE_TTL_NEG</code>、<code>PAGE_CACHE_DIR</code>、<code>IMG_CACHE_DIR</code>）。
+            <b>前台目前能正常打开（新文件已自带默认值兜底）</b>，
+            但请补传 <code>config.php</code>，否则容量档位与版本号读不到。
+            <b>下方「系统缓存」不受影响，照常可用。</b>
         </p>
         <?php endif; ?>
 
