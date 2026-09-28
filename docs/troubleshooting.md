@@ -366,6 +366,56 @@ du -sh runtime/cache/
 rm -rf runtime/cache/*        # 或用后台的「清空全部缓存」
 ```
 
+### 点了「清理 OPcache」还是不生效（传了新文件仍跑旧代码）
+
+**现象**：手动清理显示 `✓ 缓存清理成功`，或后台按钮提示已重置，
+**但首页依旧是旧代码 / 依旧 500**。同时状态显示 `缓存满=是`、
+`已用 511.97 MB / 空闲 0.03 MB`、`已缓存脚本 13955`。
+
+**三个原因，按可能性排序**：
+
+| # | 原因 | 判定 | 处理 |
+|---|------|------|------|
+| 1 | **`opcache_reset()` 只清了一个子进程** | `vp.php` A 节 SAPI = `apache2handler` | **用面板「重启 PHP / 重启站点 / 重启 Apache」**，不要只点按钮。prefork + mod_php 下每个子进程有独立 OPcache |
+| 2 | **OPcache 内存已满**，新编译结果写不进去 | `vp.php` E 节「缓存已满 = 是」 | 面板 `opcache.memory_consumption` 512 → **1024**，或重启 PHP |
+| 3 | **`validate_timestamps=0`**，永不检查文件修改时间 | `vp.php` E 节该值为 `0` | 面板 php.ini 设 `validate_timestamps=1`、`revalidate_freq=0`，以后**无需再清** |
+
+**最快的一条**：面板重启 PHP。这三条一次性全解决。
+
+> **脚本数上万（如 13955）说明这个 OPcache 被同机多个站点共用**，
+> 不是你一个站撑满的 —— 所以「我清了」往往只清了自己那部分。
+
+**注意 `.user.ini` 的适用范围**（`vp.php` A 节直接给）：
+`apache2handler`（mod_php）下 **`.user.ini` 无效**，只有 `.htaccess` 的 `php_value` 生效；
+`cgi-fpm / litespeed` 下反过来。两边都不生效时靠 `includes/guard.php` 的运行时 `ini_set` 兜底。
+
+---
+
+### 升级包是不是旧的？（首页 500 / 后台段落消失 / 清理无效，可能是同一件事）
+
+**一个判据**：升级包里**有没有 `vp.php`**。没有就是旧包 —— 1.3.0 在 2026-09-28
+修过三轮，缺任意一轮都会出问题：
+
+| 症状 | 缺哪一轮修复 | 根因 |
+|------|------------|------|
+| **首页 500 + 空响应体** | 缺「常量兜底」 | `config.php` 是旧版 → `pcSyncGate()` 抛 `Undefined constant`；`display_errors=Off` 让它变成空体 500 |
+| **后台「🧹 系统缓存」整段消失** | 缺「故障隔离」 | 状态栏在旧 `config.php` 上 fatal，把紧随其后的系统缓存段一起截断 |
+| 点了清理 OPcache 无效 | 与包无关 | 见上一节（多进程 / 满 / validate_timestamps） |
+
+**定位顺序**（`vp.php` 会自动给出）：
+
+```
+1. vp.php B 节 → 哪些文件标了「旧!」「缺!」
+2. vp.php C 节 → pcSyncGate() 是否抛错（= 首页 500 的直接死因）
+3. vp.php A 节 → SAPI（决定 OPcache 配置从哪改）
+4. vp.php E 节 → validate_timestamps 是否为 0、缓存是否已满
+```
+
+**统一处理**：**用最新包整体覆盖 44 个文件 → 面板重启 PHP → 按
+`/static/style.css` 200 → `/admin.php` 200 → `/index.php` 200 顺序验证 → 删除 `vp.php`。**
+
+---
+
 ### 后台「清理 OPcache」那一段不见了
 
 **现象**：后台能打开，但「🧹 系统缓存」以及里面的 **OPcache 复选框与清理按钮**

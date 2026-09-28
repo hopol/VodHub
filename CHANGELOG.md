@@ -131,6 +131,15 @@
   `admin.php` / `enrich.php` / `c/` / `runtime/` / `templates/`，**保留首页与播放页
   可抓**（有 SEO 价值，且它们已静态化，抓取成本≈0）。爬虫不只耗 EP，还耗磁盘。
 - **新增 `.user.ini`**：生产 PHP 配置（错误输出、OPcache、会话 GC）。
+- **新增 `vp.php` 升级体检脚本**（**用完删除**）。只读诊断，五节输出：
+  ① 环境（PHP 版本、**SAPI**——决定 `.user.ini` 还是 `.htaccess php_value` 生效、时区）；
+  ② **13 个关键文件的字节数 + md5 前 12 位与 v1.3.0 应有值逐一对比**，标 `OK/旧!/缺!`
+  —— 一眼看出到底哪个文件没传对，终结「我明明传了」的来回；
+  ③ 代码层：关键常量与函数是否就位，**并直接实测 `pcSyncGate()`**（首页 500 的死因）；
+  ④ 三个新目录是否可写；
+  ⑤ OPcache：内存/是否已满/脚本数/`validate_timestamps` 实际值 + 尝试 reset；
+  ⑥ 按上面结果自动生成「建议动作」。
+  包里**有没有 `vp.php` 就是「拿没拿到最新包」的判据**。
 - **新增 `includes/pagecache.php` / `includes/imgcache.php`**。
 - **配置变更 → 页面静态缓存全量作废**：`setSetting()` 末尾调用 `pcClear()`。
   `.htaccess` 读不到 SQLite（`RewriteMap` 在 `.htaccess` 中不可用），只能由
