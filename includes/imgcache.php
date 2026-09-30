@@ -127,6 +127,8 @@ function imgCachePut(string $url, string $body, string $mime): bool {
     if (!is_dir($dir) && !@mkdir($dir, 0755, true)) {
         return false;
     }
+    vhGuardIndex($dir);           // 运行期新建，仓库里没有这个文件，必须在此补
+
     $file = $dir . '/' . imgCacheFileName($url, $mime);
     $tmp  = $file . '.' . getmypid() . '.tmp';
     if (@file_put_contents($tmp, $body, LOCK_EX) === false) {

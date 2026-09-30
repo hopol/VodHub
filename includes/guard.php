@@ -484,6 +484,8 @@ function guardRateLimit(string $bucket, int $perMinute): bool {
     $dir = DATA_DIR . '/rl';
     if (!is_dir($dir)) {
         @mkdir($dir, 0755, true);
+        vhGuardIndex($dir);       // 限流/队列文件不列目录
+
     }
     if (!is_dir($dir)) {
         return true;   // 连限流目录都建不出来，别把站点一起拖死
@@ -521,4 +523,200 @@ function guardCheck(string $bucket, int $perMinute): void {
     if (!guardRateLimit($bucket, $perMinute)) {
         guardDeny($bucket);
     }
+}
+
+// ==================================================================
+// 环境体检：.htaccess 权限类别 + 会话目录泄露面
+//
+// 这两件事都属于「**主机配置层**」，PHP 代码本身管不着，
+// 但必须能被**准确地说出来** —— 否则站长只会看到「站点挂了」或
+// 「好像不太安全」，不知道该改哪一行。
+// ==================================================================
+
+/**
+ * 逐行解析 `.htaccess`，按 Apache 的 `AllowOverride` 权限类别归类。
+ *
+ * 【为什么必须逐行解析】
+ *   免费虚拟主机上 `.htaccess` 报 500 的头号原因，是文件里混进了需要
+ *   `AllowOverride **Options**` 的指令，而主机只给了 `FileInfo`
+ *   （`RewriteEngine` 自己要的那一类）。混进去的通常是这两条：
+ *       Options -Indexes
+ *       php_value / php_flag
+ *
+ *   ⚠️ `<IfModule>` **救不了它们**：它只检查「模块是否加载」，
+ *      不检查「AllowOverride 是否允许这条指令」。`mod_autoindex` 与
+ *      `php_module` 几乎总是加载着，所以包在 IfModule 里的这两条
+ *      看起来很安全，实际是最常见的 500 来源 —— 这是它最坑人的地方。
+ *
+ *   所以这里**不看 IfModule，只看指令名**，把越权指令的行号直接报出来。
+ *
+ * 【权限类别速查】（Apache `AllowOverride` 的五类）
+ *   AuthConfig / FileInfo / Indexes / Limit / Options
+ *   · RewriteEngine、RewriteCond、RewriteRule、Header  → FileInfo ✅ 本项目只用这类
+ *   · Options、php_value、php_flag（mod_php 的 override = OPT_OPTIONS）→ Options ❌
+ *   · php_admin_value、php_admin_flag → **根本禁止写在 .htaccess 里**，必定 500 ❌
+ *   · **ExpiresActive、ExpiresByType、ExpiresDefault → Indexes** ⚠️
+ *
+ * ⚠️ 最后那条是 2026-09-29 用 Apache/2.4.58 **逐条实测**出来的，与不少教程的
+ *    「Expires 属于 FileInfo」说法不符，实测数据（同一份 .htaccess，只改主配置）：
+ *        AllowOverride=FileInfo  → ExpiresActive **500**「not allowed here」
+ *        AllowOverride=Indexes   → ExpiresActive 200
+ *        AllowOverride=FileInfo  → RewriteEngine 200 / Header 200
+ *        AllowOverride=Options   → Options 200 / php_flag 200
+ *    所以本项目的 .htaccess **刻意不含 expires 段** —— 静态资源缓存头由
+ *    `Header set Cache-Control`（纯 FileInfo）承担，现代浏览器以它为准。
+ *
+ * @return array{
+ *   exists: bool, size: int, rewrite: bool, static: bool,
+ *   unsafe: list<string>,   // 确定会 500（需要 Options 类）："行号|指令|说明"
+ *   risky: list<string>,    // 视主机而定（需要 Indexes 类）："行号|指令|说明"
+ *   verdict: string         // ok / missing / unsafe / risky / no_rewrite
+ * }
+ */
+function guardHtAudit(): array {
+    static $cached = null;
+    if ($cached !== null) {
+        return $cached;
+    }
+
+    $r = [
+        'exists' => false, 'size' => 0, 'rewrite' => false, 'static' => false,
+        'unsafe' => [], 'risky' => [], 'verdict' => 'missing',
+    ];
+
+    $file = dirname(__DIR__) . '/.htaccess';
+    if (!is_file($file)) {
+        return $cached = $r;
+    }
+    $src = (string) @file_get_contents($file);
+    $r['exists'] = true;
+    $r['size']   = strlen($src);
+
+    foreach (explode("\n", str_replace("\r\n", "\n", $src)) as $i => $line) {
+        $t = trim($line);
+        if ($t === '' || $t[0] === '#') {
+            continue;   // 注释里的 php_value 不算数（否则注释本身就会被误判）
+        }
+        $name = (string) (preg_split('/\s+/', $t, 2)[0] ?? '');
+        if ($name === '') {
+            continue;
+        }
+
+        if (str_starts_with($name, 'Rewrite')) {
+            $r['rewrite'] = true;
+        }
+        if (str_contains($t, '/c/') && str_starts_with($name, 'RewriteCond')) {
+            $r['static'] = true;   // 页面静态直出（纯性能，缺失只是变慢）
+        }
+
+        switch ($name) {
+            case 'php_admin_value':
+            case 'php_admin_flag':
+                $r['unsafe'][] = $i + 1 . '|' . $name
+                    . '|**任何情况下都不允许写在 .htaccess 里**，必定 500';
+                break;
+            case 'Options':
+                $r['unsafe'][] = $i + 1 . '|' . $name
+                    . '|需要 `AllowOverride Options`，多数免费主机只给 `FileInfo` → 整站 500';
+                break;
+            case 'php_value':
+            case 'php_flag':
+                $r['unsafe'][] = $i + 1 . '|' . $name
+                    . '|同属 Options 类 → 500；错误输出改由 `includes/guard.php` 的 `ini_set()` 兜底';
+                break;
+            case 'ExpiresActive':
+            case 'ExpiresByType':
+            case 'ExpiresDefault':
+                // 不是「必 500」：主机给了 Indexes 或 All 就没事。
+                // 但只给 FileInfo（rewrite 必需的那一类）的主机会 500 ——
+                // 而这恰恰是「能用 rewrite」最常见的那种配置，风险很高。
+                $r['risky'][] = $i + 1 . '|' . $name
+                    . '|需要 `AllowOverride **Indexes**`（实测 FileInfo 不够）；'
+                    . '只给 FileInfo 的主机会 500。本项目改用 `Header set Cache-Control` 承担缓存头';
+                break;
+        }
+    }
+
+    if ($r['unsafe']) {
+        $r['verdict'] = 'unsafe';
+    } elseif ($r['risky']) {
+        $r['verdict'] = 'risky';
+    } elseif (!$r['rewrite']) {
+        $r['verdict'] = 'no_rewrite';
+    } else {
+        $r['verdict'] = 'ok';
+    }
+    return $cached = $r;
+}
+
+/**
+ * 会话目录是否落在 Web 根之内 —— 一个比 `data.db` 更隐蔽的泄露面。
+ *
+ * `sess_<id>` 的**文件名就是会话 ID**。目录可列 + 文件可下载 =
+ * 拿到任意一个文件名就能把 `vodsite_sid` cookie 设成它，
+ * 于是 `admin_ok` / `access_ok` 都到手 —— **等价于直接登录**，
+ * 而且完全绕过密码。这比 `data.db` 泄露更直接。
+ *
+ * `guardGcSessions()` 早就检测了同一件事，但只把它当成 GC 的触发条件，
+ * 没有当成泄露面 —— 这里把告警补上。
+ *
+ * @return array{path:string, inside:bool, source:string}
+ *         inside: true = 在 Web 根内（需要处置）；source: ini / temp / unknown
+ */
+function guardSessionExposure(): array {
+    static $cached = null;
+    if ($cached !== null) {
+        return $cached;
+    }
+
+    $raw  = (string) @ini_get('session.save_path');
+    $src  = $raw === '' ? 'temp' : 'ini';
+    $path = $raw;
+
+    // files 处理器的写法有两种：`N;/path`（N = 子目录深度）与 `N;mode;/path`
+    // —— 取最后一个分号之后的那段才是真正的路径。
+    if (str_contains($path, ';')) {
+        $parts = explode(';', $path);
+        $path  = (string) end($parts);
+    }
+    if (trim($path) === '') {
+        $path = sys_get_temp_dir();
+        $src  = 'temp';
+    }
+
+    $root = realpath(dirname(__DIR__));
+    $real = realpath($path);
+
+    // 【为什么不能只靠 realpath】
+    //   realpath() 对**不存在的路径返回 false** —— 而会话目录恰恰常常还没建：
+    //   PHP 要到第一次 session_start() 才创建它。只判 realpath 会把
+    //   「现在还没建、一建就在站点根里」误报成安全，正是最需要拦的那种情况。
+    //   所以 realpath 拿不到时，退回**字面路径**比对（并把相对路径按 cwd 展开）。
+    $inside = false;
+    $norm   = str_replace('\\', '/', $path);
+    if ($norm !== '' && !str_starts_with($norm, '/')) {
+        $norm = rtrim(str_replace('\\', '/', (string) getcwd()), '/') . '/' . $norm;
+    }
+    $norm = rtrim($norm, '/');
+
+    if ($root !== false) {
+        $nroot = rtrim(str_replace('\\', '/', (string) $root), '/');
+        if ($real !== false) {
+            $rnorm = rtrim(str_replace('\\', '/', (string) $real), '/');
+            $inside = ($rnorm === $nroot) || str_starts_with($rnorm, $nroot . '/');
+        } else {
+            // 字面比对：**等于站点根本身也算**（session.save_path 直接指向站点根）
+            $inside = ($norm !== '' && ($norm === $nroot || str_starts_with($norm, $nroot . '/')));
+        }
+        // realpath 成功但与字面不同（软链）时以 realpath 为准；否则用字面结果
+        if ($real === false) {
+            $real = $norm !== '' ? $norm : $path;
+        }
+    }
+
+    return $cached = [
+        'path'   => (string) ($real !== false ? $real : $path),
+        'inside' => $inside,
+        'source' => $src,
+    ];
 }

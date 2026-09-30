@@ -17,8 +17,26 @@ VodHub 的所有配置都存在 SQLite 里（`runtime/data.db`），**没有配�
 // 站点名称（可在后台改，这里只是兜底默认值）
 define('APP_NAME', '影视聚合站');
 
-// 运行期目录（数据库 + 缓存）。需要可写，且不要对 Web 公开
-define('DATA_DIR', __DIR__ . '/runtime');
+// 运行期目录（数据库 + 接口缓存 + 错误日志）。需要可写，且**不要对 Web 公开**。
+//
+// 1.3.3 起这里**不是写死的一行**，由 vhResolveDataDir() 四级解析（在本文件下方）：
+//   ① 显式指定 VODHUB_DATA_DIR（常量或环境变量）← 迁移老站点用这个
+//   ② runtime/data.db 已存在 → 原地不动（**绝不自动搬**，否则等于丢库）
+//   ③ 全新安装 → 优先建站点根的兄弟目录 ../vodhub-data/（Web 不可达）
+//   ④ 都不成 → 回退 runtime/（此时 .htaccess 拦 runtime/ 是唯一防线）
+//
+// 解析结果经下面两行导出，供后台「安全基线」与 vp.php I 节判断安全等级：
+//   DATA_DIR         实际使用的目录
+//   DATA_DIR_OUTSIDE 是否在 Web 根之外（true = .htaccess 拆了也不泄露）
+//
+// 想把数据挪出 Web 根（**推荐**，从此不依赖 .htaccess）：
+//   1) mkdir -p ../vodhub-data && mv runtime/* ../vodhub-data/   ← 移动，不是复制
+//   2) 打开 config.php，把 `// define('VODHUB_DATA_DIR', ...)` 前面的 // 去掉
+//   详见 [部署指南 · 数据目录](deployment.md#数据目录不依赖-htaccess-的安全基线)
+//
+// [$vhDataDir, $vhDataOutside] = vhResolveDataDir();
+// define('DATA_DIR', $vhDataDir);
+// define('DATA_DIR_OUTSIDE', $vhDataOutside);
 define('DB_FILE',  DATA_DIR . '/data.db');
 define('CACHE_DIR', DATA_DIR . '/cache');
 
@@ -35,8 +53,11 @@ define('DEFAULT_ADMIN_PASSWORD', 'admin123');
 // ---- 极致低功耗模式（1.3.0 新增）----
 // 上游失败的负缓存：这段时间内完全不出站（消灭故障放大器）
 define('CACHE_TTL_NEG', 60);
-// 页面静态缓存目录 —— 必须在站点根目录下（.htaccess 用相对路径 rewrite 到这里），
-// 不能放进 runtime/（那里被 .htaccess 整个 [F] 拦掉）
+// 页面静态缓存目录 —— **必须留在 Web 根内**：Apache 的 0-EP 直出
+// （.htaccess 里那 6 组 RewriteCond -f）只能服务站点根之下的文件。
+// 它装的是已渲染好的**公开页面**，不涉密，所以留在 Web 根内没有安全代价。
+// 注意不能放进数据目录 —— 数据目录被 .htaccess 的 runtime/ 规则整个 [F] 拦掉，
+// 静态文件会被挡在门外。
 define('PAGE_CACHE_DIR', __DIR__ . '/c');
 // 图片代理本地缓存目录，可被 Web 直接访问
 define('IMG_CACHE_DIR', __DIR__ . '/static/imgcache');

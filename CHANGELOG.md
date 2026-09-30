@@ -7,6 +7,255 @@
 
 ## [Unreleased]
 
+### 修复：`.htaccess` 不再触发免费主机的整站 500
+
+**现象**：传完文件打开就是 **500 白屏**，后台也进不去，换浏览器/清缓存都没用。
+
+**原因**：旧 `.htaccess` 里有 **19 条越权指令**，分成两档 ——
+
+| 档 | 指令 | 条数 | 需要 `AllowOverride` |
+|---|---|---:|---|
+| 必 500 | `Options -Indexes` ×1、`php_flag` ×4、`php_value` ×2 | 7 | **`Options`** |
+| 只给 FileInfo 时 500 | `ExpiresActive` ×1、`ExpiresByType` ×11 | 12 | **`Indexes`** |
+
+而多数免费虚拟空间只给 `FileInfo`（`RewriteEngine` 自己就要的那一类）。
+
+> ⚠️ `<IfModule>` **救不了任何一档** —— 它只检查「模块是否加载」，不检查
+> 「AllowOverride 是否允许这条指令」。`mod_autoindex`、`mod_expires`、`php_module`
+> 几乎总是加载着，所以包在 IfModule 里的这些**看着很安全，实际必 500**。
+> 这是它最坑人的地方。
+
+> ⚠️ **`ExpiresActive` 属于 `Indexes` 不属于 `FileInfo`** —— 这一条与不少教程的
+> 说法相反，是 2026-09-29 拿 Apache/2.4.58 **逐条实测**出来的：
+> ```
+> AllowOverride=FileInfo  → ExpiresActive 500「not allowed here」
+> AllowOverride=Indexes   → ExpiresActive 200
+> AllowOverride=FileInfo  → RewriteEngine 200 / Header set 200
+> ```
+> 它特别毒的地方在于：**FileInfo 恰恰是 rewrite 必需的那一类**，
+> 于是会出现「rewrite 能用、却因为一句 expires 把整站打成 500」这种最难查的组合。
+
+**做法**：`.htaccess` **只保留 FileInfo 类指令**（`RewriteEngine`/`RewriteCond`/
+`RewriteRule`/`Header`），权限要求从「FileInfo + Options + Indexes」
+降到「**仅 FileInfo**」—— 而 FileInfo 正是 rewrite 自己需要的，
+**能用 rewrite 的主机就一定能用它**，不存在中间地带。原来那三档的职责改由
+**纯文件与 PHP** 兜底，都不需要任何服务器配置：
+
+| 原指令 | 需要 | 现在靠什么 | 为什么不需要 AllowOverride |
+|---|---|---|---|
+| `Options -Indexes` | Options | 各目录下的空 `index.html`（`static/`、`templates/`、`static/img/`、`static/js/`，以及运行期新建的 `runtime/`、`runtime/cache/`、`static/imgcache/`、`runtime/rl/`、`runtime/queue/`） | `DirectoryIndex index.html` 是 **Apache 主配置的默认值** |
+| `php_value` / `php_flag` | Options | `includes/guard.php` 的运行时 `ini_set()` | PHP 自己的接口，与 Apache 无关，**覆盖全部 SAPI** |
+| `ExpiresActive` / `ExpiresByType` | **Indexes** | `mod_headers` 的 `Cache-Control` | 只要 FileInfo；现代浏览器以它为准，实测功能无差别。`expires` 整段**只保留在 `docs/deployment.md`**，用之前先确认主机给了 `Indexes` |
+
+**实测矩阵**（Apache/2.4.58，同一份 `.htaccess` 只改主配置）：
+
+| `AllowOverride` | 结果 |
+|---|---|
+| `None` | ✅ 200 —— 文件完全不解析，没有 500，但访问控制也全没了 |
+| **`FileInfo`** | ✅ **200 —— 本次改造的目标档位** |
+| `FileInfo Indexes` / `All` | ✅ 200 |
+| `Indexes` / `Limit` / `AuthConfig` / `Options`（不含 FileInfo） | ❌ 500 `RewriteEngine not allowed here` |
+
+**验证**：真实 Apache 下（老布局 + `AllowOverride FileInfo`）——
+8 个入口全部 200/302；`runtime/data.db`、`runtime/cache/*`、`runtime/php-errors.log`、
+`templates/*.php`、`templates/*/theme.json` 全部 **403**；页面静态直出正常；
+静态资源带 `Cache-Control`；**`.htaccess` 错误 0 条**。
+
+### 新增：数据目录可移出 Web 根（不依赖 `.htaccess` 的安全基线）
+
+`data.db` 是 `data.db` —— Apache 对**非 `.php` 文件**的请求直接读磁盘吐字节，
+**全程不进 PHP**，所以任何「在 PHP 里判断一下」的拦截都无效。
+唯一与服务器配置无关的解法是**不把它放进 Web 根**。
+
+`config.php` 新增 `vhDirUsable()` / `vhResolveDataDir()`，三级解析：
+
+1. 显式指定（`VODHUB_DATA_DIR` 常量或环境变量）
+2. **`runtime/data.db` 已存在 → 原地不动**（自动切换等于静默丢库，绝不自动搬）
+3. 全新安装 → 优先建站点根的兄弟目录 `../vodhub-data/`（Web 不可达）
+4. 都不成 → 回退 `runtime/`（此时 `.htaccess` 拦截是唯一防线）
+
+导出 `DATA_DIR_OUTSIDE` 常量，供后台与 `vp.php` 判断安全等级。
+**判据是试写不是 `is_writable()`** —— 共享主机上父目录常显示可写、实际 `mkdir` 被拒。
+
+> ⚠️ 移出后**面板备份只覆盖 Web 根**，`../vodhub-data/` 要单独备份。
+> 这是物理隔离的真实代价，写进了部署文档。
+
+### 新增：安全基线自检（后台第一屏 + `vp.php` I 节）
+
+三项都是「**主机配置层**」问题，PHP 代码本身管不着，但必须能被准确说出来：
+
+- **`.htaccess` 权限类别逐行审计**（`guardHtAudit()`）：按 Apache `AllowOverride`
+  五类归类，把越权指令的**行号**直接报出来。不看 `<IfModule>`，只看指令名 ——
+  否则包在 IfModule 里的 `Options -Indexes` 会被漏判。
+- **会话目录泄露面**（`guardSessionExposure()`）：`sess_<ID>` 的**文件名就是会话 ID**，
+  目录可列 + 文件可下载 = 直接伪造 `vodsite_sid` 进后台，**完全绕过密码** ——
+  比 `data.db` 泄露更直接。`guardGcSessions()` 早就检测了同一件事，
+  但只把它当 GC 触发条件，没当泄露面。
+  实现上**不能只靠 `realpath()`**：它对不存在的路径返回 `false`，
+  而会话目录恰恰常常还没建（PHP 到第一次 `session_start()` 才创建），
+  只判 realpath 会把最该拦的情况报成安全 → 现在退回字面路径比对。
+- **目录列表挡板**：各目录空 `index.html` 是否就位。
+
+后台与 `vp.php` 的判定条件一致：
+**`.htaccess` 无越权指令 且（数据在 Web 根外 或 有 rewrite）且 会话不在站内** → 达标。
+
+### 修复（验证过程中发现，与上面三条无关的**原有缺陷**）
+
+- **`.htaccess` 的 `<FilesMatch "\.php$"> Header set Cache-Control` 把 `img.php`
+  自己发的缓存头盖掉了**：
+  `img.php` 精心发的 `Cache-Control: public, max-age=604800` 被覆盖成
+  `no-cache, must-revalidate` → **每一张走 `img.php` 的图都会被浏览器反复回源**，
+  白白烧月流量与 EP，而且**完全不报错**、极难发现（Apache 实测复现）。
+  改成 `Header setifempty` —— 语义是「PHP 没发才补」：
+  - PHP 发了自己的（`img.php` 的 max-age、`enrich` 的 no-store）→ **原样保留**
+  - PHP 没发（`renderTemplate()` 的正常渲染路径）→ 补 `no-cache`，HTML 不被缓存
+
+  > 附带踩到并记下来的坑：Apache 的 `.htaccess` **只认行首 `#` 为注释**，
+  > 我一度在里面写了 `<!-- -->`，直接 500
+  > （`Expected </!--> but saw </IfModule>`）—— 文件自己的注释里早就警告过这一点。
+
+- **后台每加载一次就往错误日志灌 20 行 Warning**：
+  `requireAdmin()` 在鉴权通过后调 `sessionRelease()` 放锁，`session_status()` 回到
+  `NONE`；页面一开始输出，模板里的 `csrfToken()` 又要 `sessionStart()` ——
+  后台一个页面有十来个 `<input name="csrf">`，于是**每次加载 20 行**
+  `session_name(): Session name cannot be changed after headers have already been sent`。
+  这不是噪音：错误日志被 `guardGcLog()` 截断在 2 MB，这种刷屏会让日志反复被截，
+  **真正的故障反而出现在被冲掉的那一段里**；开着 `display_errors`
+  （`VODHUB_DEBUG=1` 排障）时这些字节还会**直接混进 HTML 把页面冲坏**。
+  两处一起修：
+  - `sessionStart()` 在 `headers_sent()` 时直接返回（`$_SESSION` 是 release 前的
+    副本，读它够用），不再硬调；
+  - `requireAccess()` / `requireAdmin()` 在**放锁之前**先调 `csrfToken()` 把令牌落盘，
+    否则令牌只存在于内存，下一次 POST 校验会「表单已过期」。
+
+- **未知 `action` 从「优雅提示」变成 500 白屏**：
+  `includes/admin-actions.php` 的 `$_ADMIN_ACTION_MAP` 定义在**文件顶层**（全局作用域），
+  而 `adminHandlePost()` 函数内没加 `global` —— `$handler = $_ADMIN_ACTION_MAP[$action] ?? null`
+  有 `??` 兜着、告警被抑制；最后那句 `count($_ADMIN_ACTION_MAP)` **没有兜底**，
+  于是直接 `Fatal TypeError`。而那句提示恰恰是排查
+  「服务器上的 `admin-actions.php` 版本不对」的**唯一线索**，自己先把页面打死了。
+  已补 `global`。
+
+### 变更
+
+- `dist/build.sh` 三条硬校验：① 运行期数据不进包 ② **开发/发布产物不进包**
+  （`.git/`、`dist/`、`.github/`、`*.zip` —— 站点根出现 `.git/` 就是整站源码公开可下载，
+  这一条与服务器配置完全无关，纯靠打包阶段挡住）③ **`.htaccess` 权限红线**：
+  含 Options 类指令直接拒绝打包。
+  清单同时并入 `git ls-files --others` —— `git diff` 不含未跟踪文件，
+  而新增的 `static/index.html` 等正是挡住目录列表的那些，漏了极难从现象反查。
+- `.user.ini` 头部说明改写：mod_php 主机现在**只靠 `guard.php`**（`php_value` 已移除）。
+- `docs/deployment.md` 新增「`.htaccess` 现在只用一类权限」与「数据目录」两节；
+  `docs/troubleshooting.md` 新增「上传后整站 500 白屏」「会话目录落在 Web 根之内」两条。
+- **无数据库变更**（`schema_version` 仍为 5）。
+
+---
+
+## [1.3.2] - 2026-09-29
+
+**主题：1.3.1 上线当天暴露的三个问题** —— 数据源标签栏消失、清缓存后 502、
+`.htaccess` 丢了却没人知道。**无数据库变更**（`schema_version` 仍为 5），
+覆盖文件即可升级、还原文件即可回滚。
+
+### 修复
+
+- **`?source=N` 页面顶部的数据源标签栏整个消失**（点进某个源就再也切不回去，
+  看着像「导航链接全坏了」）：`index.php` 把 `$sources` 过滤成只剩当前源再传给模板，
+  而页头是按 `count($sources) > 1` 决定渲不渲染标签栏的 —— 单源时必然不渲染。
+  实测无参首页 16 个标签、`?source=13` **0 个**。
+  现在拆成两个变量：`$sources` = 全部源（页头导航用）、`$pageSources` = 过滤后（内容区用），
+  模板改用 `$pageSources ?? $sources`（老模板没传就退回原行为）。
+
+- **清空缓存后短暂 502**：1.3.1 让首页在本地没分类时自己补拉，但**没给单次请求设上限** ——
+  清完接口缓存的第一波访问是 N 个源**串行**、每个最多 4 秒，15 个源最坏 **60 秒**，
+  必然撞上网关超时。现在加 **6 秒预算**（`WARM_BUDGET`）：用满就不再出站，
+  拉不完的下次访问继续（已成功的都已落盘，进度不丢），本页标成残页、不写静态缓存。
+  最坏耗时 6 + 4 = **10 秒**，稳在网关超时之内；上游健康时 15 个源通常 4~5 秒就能全部补齐。
+
+- **`.htaccess` 丢失无人知晓**：它是全站唯一能拦 `runtime/` 与 `templates/` 的文件，
+  却也是传输链路上最容易丢的点文件（FTP 过滤、zip 解压跳过、镜像同步反删）。
+  1.3.1 上线当天连续踩到两次，后果是 **`runtime/data.db` 可公开下载**（密码哈希 + 接口地址）。
+  现在**后台第一屏常驻红色告警**：文件不在或不含 `RewriteEngine On` 就一直显示，
+  并写明「单独上传、别用 zip 解压、别用镜像同步」。
+
+### 变更
+
+- 版本号 `APP_VERSION` → **1.3.2**；`pcVersionGate()` 会在升级后的首个请求
+  自动作废上一版的静态桶，新代码立即生效、无需手动清缓存。
+
+---
+
+## [1.3.1] - 2026-09-28
+
+**主题：把 1.3.0 上线当天暴露的三个问题一次修干净** —— 首页分类拿不到、
+静态直出从来没生效过、`clearCache()` 一直是空转的；后台加上版本号显示。
+全部为 bug 修复与小增强，**无数据库变更**（`schema_version` 仍为 5），
+**文件覆盖即可升级，回滚只需还原文件**。
+
+### 修复
+
+- **首页拿不到数据源分类（1.3.0 回归）**：`VodClient::getTypesLocal()` 在
+  「本地没有分类缓存」时**直接返回空结果、永不出站**，而首页是分类的**唯一**
+  展示入口 —— 拿不到分类时连「浏览全部 →」都不渲染，站内再没有路径能把这份缓存
+  填回来；后台「测试连接」走 `probe()` 是直连上游、不落盘，于是出现
+  「后台测试正常、首页却全空」。触发条件很常见：后台「清理系统缓存」默认勾选
+  「接口响应缓存」，点一次首页就永久空白（线上 `hop.free.je` 实测 15 个源全空、
+  `index.php?source=1` 在缓存被列表页补上后立刻恢复 32 个分类）。
+  现在改为：**本地有数据（哪怕过期）仍然只读本地、零出站；一条都没有时补拉一次**，
+  拉到就落盘自愈；上游不通时由 60 秒负缓存兜住，不会每次访问都重复出站。
+  同时空态文案带上失败原因（新增 `VodClient::lastMsg()`），不再只有一句
+  「无法获取分类」。
+
+- **残页被小时静态缓存冻住**：上游恰好在「冷缓存」那一瞬不通时，渲染出的
+  「无法获取分类」会被写进 `c/<时间桶>/index.html`，**接下来整整一小时所有访客
+  都看它**，而缓存 60 秒后其实已经能补上。新增 `pcVolatile()`：拿到空分类时把
+  该次渲染标成残页，`renderTemplate()` 跳过落盘。
+
+- **换完代码要等整点才生效**：新增 `pcVersionGate()` —— `APP_VERSION` 变了
+  （或桶里有 HTML 却没有版本标记，即上一版留下的）就把静态桶整体作废。
+  只要这次请求跑到了 PHP 就立刻生效，不用手动清缓存、也不用等小时翻篇；
+  **`.htaccess` 直出命中时 PHP 不跑**，那种主机仍需等整点或手动清一次。
+  版本标记 `c/.v` 在目录尚未存在时也会先补写，避免「本版刚生成的页被自己
+  在下一次请求误判成上一版残留」。
+  两处新函数都用 `function_exists()` 包住，升级包漏传 `pagecache.php` 时
+  只是少一次自愈，不会把前台打死。
+
+- **`.htaccess` 静态直出从 1.3.0 起就一次都没命中**：规则里用的 `%{TIME_YMD}`
+  **在 Apache 2.4 里根本不存在**，它静默展开成空串 —— `-f` 检查的路径变成
+  `c/-19/index.html`，永远找不到文件，「命中时 0 个 PHP 进程」这条支柱在
+  **所有 Apache 主机上都没生效**，而 rewrite 轨迹里只有一行
+  `input='.../c/-19/index.html' => not-matched`，不报任何错。
+  改用 `%{TIME_YEAR}%{TIME_MON}%{TIME_DAY}`。本地 Apache 2.4.58 开
+  `rewrite:trace6` 实测：`TIME_YEAR/MON/DAY/HOUR/MIN/SEC/WDAY/TIME` 全部正常，
+  **唯独 `TIME_YMD` 是空的**。
+
+- **PHP 与 Apache 用的不是同一个钟**：日期修好之后，只要 Apache 的系统时区
+  不落在 PHP 猜的三份候选（应用时区 / 主机 ini 时区 / UTC）里，仍然永远命不中
+  （本地实测 Apache `TZ=Europe/London`，连着两次请求都回源）。
+  现在 `.htaccess` 开头把 Apache 自己的桶名写进环境变量 `VH_BUCKET`，
+  `pcBuckets()` 照着写 —— **写与读由同一条规则决定**，时区不再是命中条件；
+  没有这个变量（`.htaccess` 未生效 / Nginx）自动退回原三候选，行为不变。
+
+- **`VodClient::clearCache()` 一直是空转的**：缓存文件名是
+  `md5(baseUrl . 查询串)`，而它拿 `md5(baseUrl)` 去 `str_starts_with` ——
+  两个 md5 没有包含关系，`unlink` **一次都不会执行**，删数据源时那份缓存
+  原样留在 1 GB 主机上，只能等 guard 的 LRU GC 收走。
+  文件名改为 `<md5(baseUrl)>_<md5(查询串)>.json`（前缀即源指纹），
+  `.neg` 负缓存一并清；**旧命名在首次读到时原地改名**，暖缓存不作废、
+  升级后不必重新打一轮上游，一直没被读到的旧文件交给 LRU GC
+  （或后台勾「接口响应缓存」一次清光）。
+
+### 新增
+
+- **后台顶栏显示当前源码版本**（`当前 1.3.0`，取自 `config.php` 的 `APP_VERSION`）。
+  `config.php` 是旧版、没定义该常量时如实显示「未知 · config.php 是旧版」——
+  这行本身就是个诊断点，不猜版本号。
+
+- **`vp.php` 文件指纹表同步到当前发布版**：`admin.php` / `includes/guard.php` /
+  `img.php` 在 `da575cc` 之后又被改过、指纹没跟上，B 节会把「已传最新版」误报成
+  「旧!」，把排查带偏。C 节同时补检 `pcVolatile()` / `pcIsVolatile()` /
+  `pcVersionGate()`。
+
 ---
 
 ## [1.3.0] - 2026-09-28
@@ -496,7 +745,9 @@
 
 ---
 
-[Unreleased]: https://github.com/hopol/VodHub/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/hopol/VodHub/compare/v1.3.2...HEAD
+[1.3.2]: https://github.com/hopol/VodHub/compare/v1.3.1...v1.3.2
+[1.3.1]: https://github.com/hopol/VodHub/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/hopol/VodHub/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/hopol/VodHub/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/hopol/VodHub/compare/v1.0.1...v1.1.0

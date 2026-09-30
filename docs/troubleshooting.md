@@ -176,6 +176,100 @@ sqlite3 runtime/data.db "UPDATE settings SET value='0' WHERE key='access_enabled
 
 ---
 
+### 点了顶部数据源，页面开了但标签栏没了（`?source=N`）
+
+**现象**：`index.php?source=13` 能打开、内容也对，可**顶部那排数据源标签整个消失**，
+再也切不回别的源 —— 看着就像「导航链接全坏了」。
+
+**原因**：`index.php` 把 `$sources` 过滤成只剩当前源再传给模板，而页头是按
+`count($sources) > 1` 决定渲不渲染标签栏的，单源时必然不渲染。
+
+**处理（1.3.2 修复）**：上传包里的 `index.php` + `templates/*/index.php`（共 6 个文件）。
+拆成 `$sources`（全部源，页头用）与 `$pageSources`（过滤后，内容区用）。
+
+### 清空缓存后短暂 502，或首页特别慢
+
+**原因**：清完接口缓存后，首页要为 N 个源**串行**补拉分类、每个最多 4 秒；
+1.3.1 没给单次请求设上限 —— 15 个源最坏 **60 秒**，必然撞上网关超时（502）。
+
+**处理（1.3.2 修复）**：加了 **6 秒预算**，用满就不再出站，最坏 6+4=10 秒；
+没补完的源下次访问继续补（已成功的已落盘，进度不丢）。
+等不及也可以先手动把坏掉/停用的源禁用，减少串行次数。
+
+### 后台第一屏红字：`.htaccess` 不在站点根
+
+**含义**：`runtime/data.db` 此刻可公开下载（密码哈希 + 接口地址）、
+`templates/` 片段可被直接执行、页面静态直出失效（每页都跑 PHP，变慢）。
+
+**处理（两条路，任选一条）**：
+
+- **A（推荐）** —— 把数据目录迁到 Web 根之外，从此不再依赖 `.htaccess` 拦数据：
+  见 [部署指南 · 数据目录](deployment.md#数据目录不依赖-htaccess-的安全基线)
+- **B** —— 把升级包里的 `.htaccess` **单独上传**到站点根，回来刷新确认红字消失
+
+**为什么会丢**（三种传输方式都会）：FTP 没开「显示隐藏文件」、zip 解压跳过点文件、
+**镜像/同步上传**在本地没解出它时会把服务器上那份**一起删掉**。
+`.htaccess` 是包里唯一的点文件 —— 每次「15/16 个文件都到了、就它没到」都是这个原因。
+
+### 上传后整站 500 白屏（后台也进不去）
+
+**首查 `.htaccess` 里的越权指令**（1.3.3 起新版已修，但服务器上可能还留着旧版）：
+
+| 指令 | 需要哪类权限 | 为什么 500 |
+|---|---|---|
+| `Options -Indexes` | `Options` | 多数免费空间只给 `FileInfo` |
+| `php_flag` / `php_value` | `Options` | 同上（mod_php 的 override 类型就是 Options） |
+| `php_admin_value` / `php_admin_flag` | — | **任何情况下都禁止写在 `.htaccess` 里**，必定 500 |
+| `ExpiresActive` / `ExpiresByType` | **`Indexes`** | ⚠️ **最容易漏判的一条**：不少教程说它属 FileInfo，但 Apache 2.4.58 实测 `AllowOverride FileInfo` 下**照样 500**（要 `Indexes`）。而 FileInfo 恰是 `RewriteEngine` 必需的那一类 ——「能用 rewrite 却因为 expires 白屏」就是这么来的 |
+
+> 判定办法：`vp.php` 的 **I 节**逐行报出行号与归属类别
+> （确定会 500 的标 ⛔，视主机而定的标 🟡）；后台第一屏「安全基线」同步显示。
+
+> ⚠️ **`<IfModule>` 救不了它们** —— 它只检查模块是否加载，不检查 AllowOverride。
+> `mod_autoindex`、`php_module` 几乎总是加载着，所以包在 IfModule 里的这几条
+> 看着很安全，实际必 500。这是它最坑人的地方。
+
+**确认方式**：`vp.php` 的 **I 节**会逐行报出越权指令的行号；
+后台第一屏「安全基线」也会标红。
+
+**处理**：把那几行连同所在 `<IfModule>` 块**整段删掉**即可 —— 功能不受影响：
+
+- `Options -Indexes` → 各目录下的空 `index.html`（`DirectoryIndex` 是 Apache 主配置默认值）
+- `php_flag` / `php_value` → `includes/guard.php` 的运行时 `ini_set()`（覆盖全部 SAPI）
+
+删完刷新，500 应立刻消失。若仍 500，把 `.htaccess` 改名试一下，确认是不是它引起的。
+
+### 图片每次都重新下载（封面特别费流量）
+
+先看响应头：
+
+```bash
+curl -sI "https://你的域名/img.php?u=..." | grep -i cache-control
+```
+
+| 你看到的 | 含义 | 处理 |
+|---|---|---|
+| `no-cache, must-revalidate` | ⚠️ `.htaccess` 把 `img.php` 发的 `max-age` 盖掉了 | 确认 `.htaccess` 里是 **`Header setifempty`**（1.3.3 起）；旧版写的是 `Header set`，会无条件覆盖 PHP 的头 |
+| `public, max-age=604800` | 正常 | 不用管；若仍频繁重下，去后台勾「图片本地缓存」清理一次 |
+| **没有 `Cache-Control` 行** | `.htaccess` 没生效或没传 | 单独上传 `.htaccess`，或按上文把数据目录迁出 |
+
+> 这条以前完全看不出来 —— 没有任何报错，只是流量悄悄涨。
+> 判据就是上面那一条 `curl -sI`。
+
+### 会话目录落在 Web 根之内（可伪造登录态）
+
+`vp.php` I 节或后台「安全基线」显示「会话目录 ⛔ Web 根内」时：
+
+`sess_<ID>` 的**文件名就是会话 ID** —— 目录能列、文件能下载 =
+拿到任意一个就能把 cookie 设成它，**直接进后台，完全绕过密码**。
+
+处理（按顺序试）：
+
+1. 面板「PHP 设置」把 `session.save_path` 改到 Web 根之外（首选）
+2. 改不了就在 `.user.ini` 里加 `session.save_path = ../vodhub-data/sessions`
+   （CGI/FPM 有效，**不依赖 `.htaccess`**）
+3. 都不行 → 会话目录权限设 700，并定期改后台密码
+
 ## 图片相关
 
 ### 封面全裂 / 全是占位图
@@ -348,6 +442,33 @@ sqlite3 runtime/data.db "UPDATE settings SET value='0' WHERE key='access_enabled
 - 立即看：后台 → 站点与维护 → **清空全部缓存**
 - 改 TTL：`config.php` 里的 `CACHE_TTL`（秒）
 
+### 首页全是「无法获取分类」，但列表页正常（1.3.0 回归，1.3.1 修复）
+
+**现象**：首页每个源都写「无法获取分类 / 0 个分类」，也**没有**「浏览全部 →」；
+可后台「测试连接」明明显示「分类 N 个」，点进列表页也有影片、有分类。
+
+**原因**（1.3.0 两处叠加）：
+
+1. 首页改用 `getTypesLocal()` **只读本地**分类缓存，本地没有时原来**直接返回空、
+   永不出站**；而首页是分类的唯一入口 —— 空态下连「浏览全部 →」都不渲染，
+   站内再没有路径能把缓存补上（「测试连接」走 `probe()` 直连上游、不落盘）。
+   最常见的触发是后台「清理系统缓存」**默认勾选**「接口响应缓存」；
+2. 渲染出的空页还会被写进 `c/<时间桶>/index.html`，**冻住整整一小时**。
+
+**处理**：
+
+1. 上传修复后的 `includes/client.php`（补拉）+ `includes/pagecache.php`、
+   `includes/template.php`（残页不落盘、换版本自动作废）+ 5 套模板的
+   `templates/*/index.php`；
+2. 后台「系统缓存」勾**页面静态缓存**清一次（或直接 `rm -rf c/`）。
+   不清也行：只要这次请求**跑到了 PHP**，`pcVersionGate()` 会自动作废旧桶；
+   但 **`.htaccess` 直出命中时 PHP 根本不跑**，那种主机只能等整点换桶或手动清；
+3. 重启 PHP（面板「重启站点」），`vp.php` 的 E 节显示 OPcache 已满时尤其要重启。
+
+**自检**：空态那句话现在会带上失败原因 ——「接口请求失败：…」= 上游不通；
+「接口暂时不可用（60 秒内不再重试）」= 上游刚失败过、正在负缓存；一句原因都没有
+= 上游返回了分类数组但确实是空的。
+
 ### 上游挂了整站打不开
 
 **设计如此会自动降级**——上游故障时用过期缓存顶着。
@@ -377,9 +498,18 @@ sqlite3 runtime/data.db "UPDATE settings SET value='0' WHERE key='access_enabled
 ```bash
 # ① 有没有生成静态文件
 find c -name '*.html' | wc -l          # 0 → 没生成，看下面「权限」
-# ② 是不是 rewrite 没生效
-#    有文件但第二次还是慢 → .htaccess 的 -f 没匹配（多半是时区或 AllowOverride）
+# ② 是不是 rewrite 没命中（判据：静态直出的响应一定带 Last-Modified）
+curl -sI https://你的域名/index.php | grep -i last-modified
 ```
+
+> **1.3.0 有个真 bug，1.3.1 已修**：规则里写的 `%{TIME_YMD}` 在 Apache 2.4
+> **根本不存在**，它静默展开成空串，`-f` 检查的路径变成 `c/-19/index.html`，
+> **永远找不到文件** —— 所以静态直出在任何 Apache 主机上都没生效过。
+> 判别方法：开 `LogLevel rewrite:trace6` 后看 error.log，
+> 会看到 `input='.../c/-19/index.html' => not-matched`（日期位是空的）。
+> 修法是改用 `%{TIME_YEAR}%{TIME_MON}%{TIME_DAY}`，并由 `.htaccess` 把
+> Apache 自己的桶名通过 `VH_BUCKET` 告诉 PHP，写入不再猜时区。
+> **升级后请连 `.htaccess` 一起传**，只传 PHP 文件修不好这一条。
 
 | 情况 | 判断 | 处理 |
 |------|------|------|
@@ -474,8 +604,10 @@ https://你的域名/admin.php?export=1
 > 不是你一个站撑满的 —— 所以「我清了」往往只清了自己那部分。
 
 **注意 `.user.ini` 的适用范围**（`vp.php` A 节直接给）：
-`apache2handler`（mod_php）下 **`.user.ini` 无效**，只有 `.htaccess` 的 `php_value` 生效；
-`cgi-fpm / litespeed` 下反过来。两边都不生效时靠 `includes/guard.php` 的运行时 `ini_set` 兜底。
+`apache2handler`（mod_php）下 **`.user.ini` 无效**；1.3.3 起 `.htaccess` 也**不再写
+`php_value`**（那条要 `AllowOverride Options`，会让整站 500）——
+所以 mod_php 主机**只靠 `includes/guard.php` 的 `ini_set()`**；
+`cgi-fpm / litespeed` 下 `.user.ini` 生效。**无论如何 guard.php 都兜底**。
 
 ---
 
@@ -519,12 +651,12 @@ PHP 就会在中途致命错误；而生产环境 `display_errors=Off`，
 
 | 页面末尾 | 缺什么 | 处理 |
 |---------|--------|------|
-| 有一块红框：**「⛔ 后台在此处中断：PHP 致命错误」**，带文件与行号 | 缺 `includes/*.php`（`require` 阶段就断了） | 按提示补齐 43 个文件 → 清 OPcache → 刷新 |
+| 有一块红框：**「⛔ 后台在此处中断：PHP 致命错误」**，带文件与行号 | 缺 `includes/*.php`（`require` 阶段就断了） | 按升级包 `升级说明.md` 第二节的清单整体重传 → 清 OPcache → 刷新 |
 | 「🔋 极致低功耗状态」显示 **「⚠️ 无法显示（…常量 … 未定义）」**，下面「系统缓存」**正常** | **`config.php` 是旧版**（最常见） | 只补传 `config.php` 即可，系统缓存段已自动隔离不受影响 |
 | 什么提示都没有、页面就是短一截 | 站上还是旧版 `admin.php` | 用升级包里的 `admin.php` 覆盖 |
 
-**兜底**：即使上面都看不懂，直接把升级包的 **43 个文件整体重传一次**
-（`升级说明.md` 第二节「整包覆盖，别挑着传」），这是 100% 有效的。
+**兜底**：即使上面都看不懂，直接把升级包的**全部文件整体重传一次**
+（`升级说明.md` 第二节「整体覆盖，别挑着传」），这是 100% 有效的。
 
 > 1.3.0 起，`admin.php` 顶部注册了 shutdown handler，**致命错误会显示在页面末尾**
 > （错误信息 + 文件 + 行号），不再是静默截断 —— 所以下次再遇到应当直接能看到原因。

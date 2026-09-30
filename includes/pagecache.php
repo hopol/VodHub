@@ -141,6 +141,19 @@ function pcBuckets(): array {
     // 3) UTC（共享主机最常见的系统时区）
     $add($now->setTimezone(new DateTimeZone('UTC')));
 
+    // 4) **Apache 自己报的桶** —— 前三个都是猜的（应用时区 / ini 时区 / UTC），
+    //    只要 Apache 的系统时区不在这三者之内就**永远命不中**：本地实测
+    //    Apache TZ=Europe/London 时，连着两次请求都回源，页面能用但一层白做。
+    //    `.htaccess` 开头那条 RewriteRule 把 %{TIME_YEAR}%{TIME_MON}%{TIME_DAY}-%{TIME_HOUR}
+    //    写进 VH_BUCKET，这里照抄 —— 「按哪个钟找」和「按哪个钟写」从此同源，
+    //    不存在猜错。没有这个环境变量（.htaccess 没生效 / Nginx）就退回上面三个候选。
+    foreach ([(string) ($_SERVER['VH_BUCKET'] ?? ''), (string) (getenv('VH_BUCKET') ?: '')] as $b) {
+        $b = trim($b);
+        if ($b !== '' && preg_match('/^\d{8}-\d{1,2}$/', $b)) {
+            $names[$b] = true;
+        }
+    }
+
     return $buckets = array_keys($names);
 }
 
@@ -189,6 +202,79 @@ function pcWrite(string $key, string $html): void {
 }
 
 /**
+ * 标记本次渲染是**残页**（数据不完整），不要写进静态缓存。
+ *
+ * 典型场景：首页某个数据源的分类缓存被清空、而上游此刻不通 —— 渲染出来的是
+ * 「无法获取分类」。这种页面一旦落进小时桶，**接下来整整一小时所有访客都看它**，
+ * 而缓存 60 秒后其实已经能补上了。宁可这一小时多渲染几次，也不冻住残页。
+ *
+ * 谁来标：`VodClient::getTypesLocal()` 在拿到空分类时标一次。
+ */
+function pcVolatile(): void {
+    $GLOBALS['__pc_volatile'] = true;
+}
+
+/** 本次渲染是否被标成残页（renderTemplate 写盘前问一句） */
+function pcIsVolatile(): bool {
+    return !empty($GLOBALS['__pc_volatile']);
+}
+
+/**
+ * 版本门：代码版本变了就把上一版生成的静态 HTML 作废。
+ *
+ * 为什么必须有：静态桶按**小时**翻篇，换完代码后最多要等一整点新逻辑才生效 ——
+ * 「修好了却看着没修」最典型的来源就是这个（1.3.0 修首页分类时实测踩到）。
+ * 升级换文件的瞬间把上一版的产出清掉，改完即生效。
+ *
+ * 三种情况都作废：版本号不同 / 从没写过版本标记却已有 HTML（上一版留下的）。
+ * 只删时间桶目录，`.lock` 与 `.v` 都不动；任何异常都吞掉 ——
+ * 作废失败最多是「晚一个桶才生效」，绝不影响本次渲染。
+ */
+function pcVersionGate(): void {
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    $done = true;
+
+    $cur = defined('APP_VERSION') ? trim((string) APP_VERSION) : '';
+    if ($cur === '') {
+        return;   // config.php 是旧版、认不出版本：不猜，更不乱删
+    }
+
+    $mark = PAGE_CACHE_DIR . '/.v';
+
+    if (!is_dir(PAGE_CACHE_DIR)) {
+        // 还没有静态目录：没有旧页可作废，但**必须先把版本标记补上** ——
+        // 否则目录稍后被建出来、里面已经有本版写的 HTML 时，
+        // 下一次请求会把它们误判成「上一版留下的」而白删一整轮（多渲染一次不算事，
+        // 但「刚生成的缓存立刻被自己删掉」这种行为日后极难查）。
+        if (@mkdir(PAGE_CACHE_DIR, 0755, true)) {
+            @file_put_contents($mark, $cur, LOCK_EX);
+        }
+        return;
+    }
+
+    $old = is_file($mark) ? trim((string) @file_get_contents($mark)) : null;
+    if ($old === $cur) {
+        return;
+    }
+
+    try {
+        // 没有标记却已经有 HTML → 一定是这版代码之前留下的，作废一次
+        $stale = ($old !== null) || ((glob(PAGE_CACHE_DIR . '/*/*.html') ?: []) !== []);
+        if ($stale) {
+            foreach ((glob(PAGE_CACHE_DIR . '/*', GLOB_ONLYDIR) ?: []) as $bucket) {
+                guardRmDir($bucket);
+            }
+        }
+    } catch (Throwable $e) {
+        // 见函数说明：清不掉只是晚一个桶生效
+    }
+    @file_put_contents($mark, $cur, LOCK_EX);
+}
+
+/**
  * 清空整个页面缓存。
  *
  * 触发时机：任意配置写入（后台改站点设置 / 数据源 / 分组 / 模板样式 /
@@ -214,6 +300,11 @@ function pcClear(): void {
     }
     // 清完顺手同步总闸：该关就写 c/.lock，该开就摘掉
     pcSyncGate();
+    // 版本标记也被上面一起删了，补回去 —— 否则下次 pcVersionGate 会把
+    // 「刚清空的目录」误判成「上一版留下的 HTML」而白跑一趟。
+    if (defined('APP_VERSION')) {
+        @file_put_contents(PAGE_CACHE_DIR . '/.v', trim((string) APP_VERSION), LOCK_EX);
+    }
 }
 
 /**

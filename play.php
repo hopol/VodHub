@@ -21,6 +21,11 @@ require_once __DIR__ . '/includes/template.php';
 
 requireAccess();
 
+// 整页出站墙钟起表（2026-09-30 线上 502 根治）：
+// 从页面进来到整页出站锁在 client.php 的 PAGE_DEADLINE_BUDGET（2.5s）内，
+// 稳压在 OpenResty ~3s 网关，绝不因某个慢源把整页拖到 502。
+VodClient::pageBudgetStart();
+
 // 支柱六：播放页每个请求还会跟一次上游 detail，30 次/分钟/IP 兜底
 guardCheck('play', 30);
 

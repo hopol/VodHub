@@ -158,16 +158,31 @@ function clearSystemCache(bool $api, bool $enrich, bool $opcache,
 
     if ($api) {
         $n = 0;
+        $neg = 0;
         $bytes = 0;
-        foreach ((glob(CACHE_DIR . '/*.json') ?: []) as $f) {
-            if (is_file($f)) {
+        foreach ((glob(CACHE_DIR . '/*') ?: []) as $f) {
+            if (!is_file($f)) {
+                continue;
+            }
+            $base = basename($f);
+            if (str_ends_with($base, '.neg')) {
+                // ★ 必须一起清：负缓存是「上游刚挂了，60 秒内别再重试」。
+                // 留着它清掉数据 = 下次访问命中负缓存 → 直接返回空结果，
+                // **永远不会再尝试上游**，站点就卡死在「无法获取分类」。
+                if (@unlink($f)) {
+                    $neg++;
+                }
+                continue;
+            }
+            if (str_ends_with($base, '.json')) {
                 $bytes += (int) filesize($f);
                 if (@unlink($f)) {
                     $n++;
                 }
             }
         }
-        $parts[] = '接口缓存 ' . $n . ' 个文件（' . bytesHuman($bytes) . '）';
+        $parts[] = '接口缓存 ' . $n . ' 个文件（' . bytesHuman($bytes) . '）'
+                 . ($neg ? ' + 负缓存 ' . $neg . ' 个' : '');
     }
 
     if ($enrich) {

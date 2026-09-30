@@ -89,9 +89,13 @@ $ep = episodes(is_array($detail ?? null) ? $detail : [], intval($playCount ?? 0)
             <dt>更新</dt><dd><?= h($meta['time']) ?></dd>
         <?php endif; ?>
 
-        <?php if ($meta['play_from'] !== ''): ?>
+        <?php
+        // 同 vod_meta：vod_play_from 是逗号分隔的来源名，必须先切分再展示。
+        $pfList = playFromList($meta['play_from'] ?? '');
+        if ($pfList): ?>
             <dt>播放来源</dt>
-            <dd><?= h($meta['play_from']) ?><?= $meta['play_server'] !== '' && $meta['play_server'] !== 'no' ? ' · ' . h($meta['play_server']) : '' ?></dd>
+            <dd><?= implode('、', array_map('h', $pfList)) ?>
+                <?= $meta['play_server'] !== '' && $meta['play_server'] !== 'no' ? ' · ' . h($meta['play_server']) : '' ?></dd>
         <?php endif; ?>
 
         <?php if ($meta['letter'] !== '' && $meta['pinyin'] === ''): ?>

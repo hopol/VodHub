@@ -48,10 +48,136 @@ foreach (['curl', 'pdo_sqlite'] as $requiredExt) {
 define('APP_NAME', '影视聚合站');
 
 // 版本号（与 CHANGELOG.md 保持一致）
-define('APP_VERSION', '1.3.0');
+define('APP_VERSION', '1.3.3');
+
+// ================================================================
+// 数据目录（安全基线 · 无 .htaccess 也能守住的那一条）
+// ================================================================
+//
+// 【为什么要有这段】
+//   runtime/ 下是 data.db（管理密码哈希 + 上游接口地址）、接口缓存、错误日志。
+//   Apache 对**非 .php 文件**的请求是「直接读磁盘吐字节」，全程不进 PHP ——
+//   所以任何「在 config.php 里判断一下」的拦截都无效。
+//   `.htaccess` 能拦，但它需要主机开 `AllowOverride`；`AllowOverride` 没开的
+//   免费主机上，这里就是唯一防线。
+//   **唯一与服务器配置无关的解法是：不把它放进 Web 根。**
+//
+// 【四级解析，绝不自动搬老站的数据】
+//   ① 显式指定 VODHUB_DATA_DIR（常量或环境变量）—— 站长主动迁移时用
+//   ② runtime/data.db 已存在            —— 老站点**原地不动**（自动切换 = 丢库）
+//   ③ 全新安装                          —— 优先建站点根的兄弟目录 ../vodhub-data
+//   ④ 上面都不成                        —— 回退 runtime/（此时靠 .htaccess 拦）
+//
+// DATA_DIR_OUTSIDE 供后台与 vp.php 判断安全等级：
+//   true  → 数据在 Web 根之外，`.htaccess` 拆了也不会泄露（最优）
+//   false → 数据在 Web 根内，`.htaccess` 是唯一防线，必须确认它真的生效
+
+/**
+ * 目录是否可用（**试写判据**，不是 is_writable()）。
+ *
+ * 共享主机上父目录常显示可写、实际 mkdir 被拒：NFS 挂载、配额满、
+ * open_basedir 未放行、面板软链。所以新建目录必须真的写进去一次。
+ *
+ * 目录已存在时退化为一次 is_writable()（stat 调用）——
+ * 本函数在**每个请求**都会走到这一分支，不能每次都写探针文件。
+ */
+function vhDirUsable(string $dir): bool {
+    if ($dir === '') {
+        return false;
+    }
+    if (is_dir($dir)) {
+        return is_writable($dir);
+    }
+    if (!@mkdir($dir, 0755, true)) {
+        return false;   // open_basedir 未放行 / 父目录只读 / 权限不足
+    }
+    $probe = $dir . '/.wprobe';
+    $ok = (@file_put_contents($probe, '1') !== false);
+    if ($ok) {
+        @unlink($probe);
+    }
+    return $ok;
+}
+
+/**
+ * 在目录里放一个空 index.html，挡住目录列表。
+ *
+ * 代替 `.htaccess` 里的 `Options -Indexes` —— 那条需要 `AllowOverride Options`，
+ * 而多数免费主机只给 `FileInfo`，于是**包了 `<IfModule>` 也会 500**
+ * （IfModule 只看模块在不在，不看 AllowOverride 允不允许）。
+ * `DirectoryIndex index.html` 是 Apache 主配置的默认值，**不需要任何
+ * AllowOverride 权限** —— 这就是为什么纯文件比 `.htaccess` 指令可靠。
+ *
+ * 幂等、廉价（已存在就直接返回），建目录的每个点各调一次。
+ */
+function vhGuardIndex(string $dir): void {
+    static $done = [];
+    if (isset($done[$dir]) || $dir === '' || !is_dir($dir)) {
+        return;
+    }
+    $done[$dir] = true;
+    $f = $dir . '/index.html';
+    if (is_file($f)) {
+        return;
+    }
+    @file_put_contents(
+        $f,
+        '<!-- VodHub：本文件唯一的作用是挡住目录列表（代替 .htaccess 的 `Options -Indexes`）。'
+        . '那条指令需要 AllowOverride Options，多数免费主机不给，会整站 500。请勿删除。 -->\n'
+    );
+}
+
+/** 解析数据目录。结果按请求缓存，后续调用零开销。 */
+function vhResolveDataDir(): array {
+    static $resolved = null;
+    if ($resolved !== null) {
+        return $resolved;
+    }
+
+    $legacy = __DIR__ . '/runtime';
+
+    // ① 显式指定 —— 迁移数据目录时用。两种写法任选其一（常量更通用，
+    //    因为免费主机面板常常没有设置环境变量的入口）：
+    //      a) 在本文件下方写：  define('VODHUB_DATA_DIR', '/home/你/vodhub-data');
+    //      b) 设环境变量：       VODHUB_DATA_DIR=/home/你/vodhub-data
+    $spec = defined('VODHUB_DATA_DIR') ? (string) VODHUB_DATA_DIR : (string) (getenv('VODHUB_DATA_DIR') ?: '');
+    if (trim($spec) !== '') {
+        $spec = rtrim(trim($spec), '/');
+        if ($spec !== '' && vhDirUsable($spec)) {
+            return $resolved = [$spec, true];
+        }
+    }
+
+    // ② **已有数据的老站点绝不自动搬家** —— 静默换目录等于静默丢库。
+    //    迁移必须由站长显式做（见 docs/deployment.md「数据目录」一节）。
+    if (is_file($legacy . '/data.db')) {
+        return $resolved = [$legacy, false];
+    }
+
+    // ③ 全新安装：优先站外
+    $outer = dirname(__DIR__) . '/vodhub-data';
+    if (vhDirUsable($outer)) {
+        return $resolved = [$outer, true];
+    }
+
+    // ④ 回退站点根内（此时 .htaccess 的 runtime/ 拦截是唯一防线，后台会标红）
+    return $resolved = [$legacy, false];
+}
+
+// ---- 站长手动指定数据目录（默认注释 = 交给 vhResolveDataDir() 自动决定）----
+// 迁移老站点时，把下行的 define 前面的 // 去掉，并改成 Web 根之外的绝对路径：
+// define('VODHUB_DATA_DIR', '/home/你的用户名/vodhub-data');
+// ⚠️ 改完**必须**先把 runtime/ 整个移动到该路径（是移动不是复制），
+//    否则等于开了个空库，站点会「看起来像重装了」。
+//    完整步骤见 docs/deployment.md「数据目录（不依赖 .htaccess 的安全基线）」。
+
+[$vhDataDir, $vhDataOutside] = vhResolveDataDir();
 
 // 运行数据目录（数据库、缓存，部署后需保证可写）
-define('DATA_DIR', __DIR__ . '/runtime');
+define('DATA_DIR', $vhDataDir);
+
+// 数据目录是否在 Web 根之外（详见上方说明）
+define('DATA_DIR_OUTSIDE', $vhDataOutside);
 
 // SQLite 数据库文件
 define('DB_FILE', DATA_DIR . '/data.db');
@@ -72,12 +198,16 @@ define('CACHE_TTL_TYPE', 86400); // 24 小时
 define('CACHE_TTL_NEG', 60);
 
 // ---------------------------------------------------------------- 极致低功耗模式
-// 页面静态缓存目录。必须在站点根目录下（.htaccess 用相对路径 rewrite 到这里），
-// 不能放进 runtime/ —— runtime/ 被 .htaccess 整个 [F] 拦掉，静态文件会被挡在门外。
+// 页面静态缓存目录。
+// **必须留在 Web 根内**：Apache 的 0-EP 直出（.htaccess 里那 6 组 RewriteCond -f）
+// 只能服务站点根之下的文件。它装的是已渲染好的公开页面，不涉密，
+// 所以「留在 Web 根内」在安全上没有代价；列目录由 static/ 等处的空 index.html 挡。
+// 若你的主机完全用不上 rewrite，把它移出去也不影响功能（会退回第 2 层 1 EP 读盘）。
 define('PAGE_CACHE_DIR', __DIR__ . '/c');
 
-// 图片代理本地缓存目录。可被 Web 直接访问（.htaccess 只拦 runtime/ 与 templates/*.php），
-// 由 .htaccess 的 ExpiresByType image/* 享受 30 天缓存。
+// 图片代理本地缓存目录。**必须留在 Web 根内** —— 它是靠 Apache 直接吐字节省 EP 的，
+// 一旦移出 Web 根，每张图都要起一个 PHP 进程，支柱二就白做了。
+// 里面是公开的封面图，不涉密；列目录由 static/imgcache/index.html 挡。
 define('IMG_CACHE_DIR', __DIR__ . '/static/imgcache');
 
 // 会话名称

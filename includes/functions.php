@@ -79,6 +79,63 @@ function formatNumber(?int $n): string {
  * 格式："正片$https://xxx/index.m3u8"，多组以 # 或换行分隔
  * 返回：[ ['label' => '正片', 'url' => 'https://...'], ... ]
  */
+/**
+ * 把 `vod_play_from` 归一化成来源名数组。
+ *
+ * 与 `vod_play_url`（用 `$` 分隔「名$地址」、用 `#` 分隔多组）**不是同一种格式**：
+ * `vod_play_from` 是**逗号分隔的来源名**（"蓝光,高清,4K"）。
+ *
+ * 1.3.3 之前直接把原始串输出到页面，于是：
+ *   · "蓝光,高清" 整串当一个 chip，访客看不出是两个源；
+ *   · "蓝光$$1080P" 这种上游脏数据（多一个 `$`）会被当成「名=蓝光、地址=$1080P」。
+ *
+ * 切分后去空、去重、去纯符号，保留原顺序。
+ *
+ * @return string[]
+ */
+function playFromList(?string $playFrom): array {
+    if ($playFrom === null) {
+        return [];
+    }
+    $raw = trim((string) $playFrom);
+    if ($raw === '') {
+        return [];
+    }
+    // 兼容三种分隔：逗号、井号、竖线（部分源用 | 分隔）
+    // 先按来源名分隔符切：逗号 / 井号 / 竖线
+    $parts = preg_split('/[,#|]+/', $raw) ?: [];
+    $seen = [];
+    $out  = [];
+    foreach ($parts as $p) {
+        $p = trim($p);
+        if ($p === '') {
+            continue;
+        }
+        // ⚠️ 上游脏数据常见「蓝光$1080P」「蓝光$$1080P」—— 它把**清晰度**
+        //    也写进了来源名（本该在 vod_play_url 里用 `$` 分隔）。
+        //    来源名里不该出现 `$`，把尾部的 `$xxx`（一个或多个 `$` + 非分隔符）
+        //    整段剥掉，直到没有 `$` 为止。
+        $prev = null;
+        while ($p !== $prev) {
+            $prev = $p;
+            $p    = (string) preg_replace('/\$+[^,#|]*$/', '', $p);
+        }
+        $p = trim($p);
+        if ($p === '') {
+            continue;          // 整段都是 `$` 的脏数据
+        }
+        if (preg_match('/^[\$#|,]+$/', $p)) {
+            continue;          // 纯符号残留
+        }
+        if (isset($seen[$p])) {
+            continue;
+        }
+        $seen[$p] = true;
+        $out[] = $p;
+    }
+    return $out;
+}
+
 function parsePlayUrl(?string $playUrl): array {
     $result = [];
     $groups = preg_split('/[#\r\n]+/', (string) $playUrl);
@@ -92,9 +149,15 @@ function parsePlayUrl(?string $playUrl): array {
             // 没有分隔符，整串当作地址
             $result[] = ['label' => '播放', 'url' => $group];
         } else {
+            $label = trim(substr($group, 0, $pos));
+            // ⚠️ 上游脏数据常见「名$$地址」（多一个 `$`）—— 若按第一个 `$` 切，
+            // 地址段会变成 `$地址`，播放器拿去拼 URL 就坏了。
+            // 这里把**连续的 `$` 当作一个分隔符**处理，地址段从第一个非 `$` 字符取起。
+            $rest = substr($group, $pos + 1);
+            $rest = preg_replace('/^\$+/', '', $rest) ?? '';
             $result[] = [
-                'label' => trim(substr($group, 0, $pos)),
-                'url'   => trim(substr($group, $pos + 1)),
+                'label' => $label !== '' ? $label : '播放',
+                'url'   => trim($rest),
             ];
         }
     }

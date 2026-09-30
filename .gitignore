@@ -28,6 +28,12 @@ desktop.ini
 node_modules/
 composer.lock
 
+# ---- 打包产物（升级包 zip）----
+/dist/
+
+# ---- 站点诊断脚本（vp.php 暴露服务器配置，用完即删，绝不入库）----
+vp.php
+
 # ---- 本地调试遗留 ----
 *.bak
 *.orig

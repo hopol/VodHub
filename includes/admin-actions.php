@@ -46,6 +46,18 @@ $_ADMIN_ACTION_MAP = [
  * @return string 操作提示消息
  */
 function adminHandlePost(): string {
+    // ⚠️ 必须 global：$_ADMIN_ACTION_MAP 定义在**本文件顶层**（全局作用域），
+    //    函数内不加这句读到的是局部的 undefined。
+    //
+    //    后果很隐蔽：上面那句 `$handler = $_ADMIN_ACTION_MAP[$action] ?? null`
+    //    有 `??` 兜着、告警被抑制，走不到出错；
+    //    而最后那句 `count($_ADMIN_ACTION_MAP)` **没有**兜底 ——
+    //    于是「未知 action」本该返回的那句优雅提示，实际变成
+    //    **Fatal TypeError → 500 白屏**。那句提示恰恰是排查
+    //    「服务器上的 admin-actions.php 版本不对」的唯一线索，
+    //    自己先把页面打死了。
+    global $_ADMIN_ACTION_MAP;
+
     // 取 action 时容错：上游可能因缓存/截断带上空白字符，先 trim。
     $raw  = $_POST['action'] ?? '';
     $action = trim((string) (is_scalar($raw) ? $raw : ''));
@@ -199,6 +211,13 @@ function adminActionSiteSettings(array $post): string {
             $tier = 'auto';
         }
         setSetting('lowpower_tier', $tier);
+
+        // 首页补拉预算（秒）。免费空间网关超时差异很大（3/5/10/30 秒），
+        // 写死 6 秒在 3 秒超时的主机上照样撞 502 —— 所以暴露成可配置项。
+        $wb = intval($post['warm_budget'] ?? 6);
+        if ($wb < 0) { $wb = 0; }
+        if ($wb > 30) { $wb = 30; }
+        setSetting('warm_budget', (string) $wb);
 
         return $cols > 0
             ? '✅ 站点设置已保存（列表列数：' . $cols . '）'

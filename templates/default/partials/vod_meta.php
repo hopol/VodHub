@@ -68,6 +68,17 @@
         <span class="chip chip-plain">播放 <?= h(formatNumber($meta['hits'])) ?></span>
     <?php endif; ?>
 
+    <?php
+    // 播放源：vod_play_from 是**逗号分隔的来源名**（"蓝光,高清,4K"），
+    // 与 vod_play_url（用 $ 分隔「名$地址」）不是同一种格式 —— 1.3.3 之前
+    // 直接把原始字符串输出到页面，于是「蓝光,高清」整串当一个 chip、
+    // 而「蓝光$$1080P」这种上游脏数据会把 `$1080P` 当成地址。
+    // 这里按逗号/井号切分、去空、去重，只渲来源名。
+    $playFroms = playFromList($meta['play_from'] ?? '');
+    foreach ($playFroms as $pf): ?>
+        <span class="chip chip-source" title="播放源：<?= h($pf) ?>"><?= h($pf) ?></span>
+    <?php endforeach; ?>
+
     <?php if ($meta['status_code'] === 0): ?>
         <span class="chip chip-warn">已下架</span>
     <?php endif; ?>

@@ -231,7 +231,13 @@ function renderTemplate(string $pageFile, array $tplData = [], string $tplOverri
     //   ① 该小时内第一次访问（还没生成）  ② rewrite 不可用（Nginx / 禁用 mod_rewrite）
     //   ③ 服务器时区与 PHP 对不上，-f 恒不成立  ④ 访问密码开启（必须过 PHP 鉴权）
     // 前三种读盘远比重新渲染便宜（~3 ms vs ~70 ms），第四种 pcEnabled() 会返回 false。
-    pcSyncGate();   // 自愈：该关静态就写 c/.lock，该开就摘掉
+    pcSyncGate();     // 自愈：该关静态就写 c/.lock，该开就摘掉
+    // 自愈：换过代码就把上一版生成的静态 HTML 作废（否则要等整点才生效）。
+    // 带 function_exists 是**升级包漏传 pagecache.php** 时的兜底 ——
+    // 这里是全站渲染的咽喉，宁可少一次作废，也不能让它 fatal 出白屏。
+    if (function_exists('pcVersionGate')) {
+        pcVersionGate();
+    }
     $pcKey = pcKey($pageFile, $tplData);
     if ($pcKey !== null && pcEnabled()) {
         $hit = pcRead($pcKey);
@@ -275,7 +281,10 @@ function renderTemplate(string $pageFile, array $tplData = [], string $tplOverri
     require $file;
     $html = (string) ob_get_clean();
 
-    if ($pcKey !== null && $html !== '') {
+    // pcIsVolatile()：模板自己标了「这一页数据不完整」（如首页某源分类还没补上），
+    // 就不写盘 —— 否则残页会被小时桶冻住整整一小时，缓存补上了也没访客看得见。
+    if ($pcKey !== null && $html !== ''
+        && !(function_exists('pcIsVolatile') && pcIsVolatile())) {
         pcWrite($pcKey, $html);
     }
     echo $html;

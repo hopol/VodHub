@@ -158,6 +158,23 @@ code {
 
 .topbar-nav a:hover { background: var(--bg-3); color: var(--text); }
 
+/* 后台顶栏的源码版本号（只有后台管理页用） */
+.nav-version {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-3);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 3px 10px;
+    white-space: nowrap;
+}
+
+/* config.php 是旧版、认不出版本号时的告警态 */
+.nav-version-warn {
+    color: var(--danger);
+    border-color: var(--danger);
+}
+
 .source-tabs {
     max-width: 1180px;
     margin: 0 auto;

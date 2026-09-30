@@ -42,8 +42,8 @@ register_shutdown_function(static function (): void {
        . (int) $err['line'] . '</b> 行</div>'
        . '<div style="margin-top:10px"><b>最常见原因：升级包没有完整覆盖。</b>1.3.0 新增了 '
        . '<code>includes/guard.php</code>、<code>includes/pagecache.php</code>、<code>includes/imgcache.php</code>，'
-       . '并且 <code>config.php</code> 也改过（新增 4 个常量）—— <b>43 个文件必须一次传完</b>，漏一个就会断在这里。</div>'
-       . '<div style="margin-top:6px">补齐这 43 个文件后，先清一次 OPcache 再刷新本页。'
+       . '并且 <code>config.php</code> 也改过（新增 4 个常量）—— <b>升级包里的文件必须一次传完</b>，漏一个就会断在这里。</div>'
+       . '<div style="margin-top:6px">按升级包 <code>升级说明.md</code> 第二节的清单补齐后，先清一次 OPcache 再刷新本页。'
        . '详见升级包内的 <code>升级说明.md</code> 第二节。</div>'
        . '</div>\n';
 });
@@ -171,6 +171,16 @@ $editingGroup = $editGid > 0 ? getGroup($editGid) : null;
 <header class="topbar">
     <div class="topbar-inner">
         <a class="brand" href="index.php"><span class="brand-icon">▶</span><span class="brand-text">后台管理</span></a>
+        <?php
+        // 当前源码版本号 —— 常量来自 config.php 的 APP_VERSION，与 CHANGELOG.md 同步。
+        // APP_VERSION 没定义只有一种可能：config.php 是旧版（漏传），
+        // 这里必须**如实说版本未知**，而不是显示一个猜的号 —— 这行本身就是个诊断点。
+        $verOk = defined('APP_VERSION');
+        ?>
+        <span class="nav-version<?= $verOk ? '' : ' nav-version-warn' ?>"
+              title="当前源码版本（与 CHANGELOG.md 一致）">
+            当前 <?= $verOk ? h(APP_VERSION) : '未知' ?><?= $verOk ? '' : ' · config.php 是旧版' ?>
+        </span>
         <nav class="topbar-nav">
             <a href="index.php">前台</a>
             <a href="admin.php">数据源</a>
@@ -186,6 +196,118 @@ $editingGroup = $editGid > 0 ? getGroup($editGid) : null;
     <?php if ($msg !== ''): ?>
         <div class="alert" id="adminMsg"><?= h($msg) ?></div>
     <?php endif; ?>
+
+    <?php
+    // ---------------------------------------------------------------- 安全与环境自检
+    // （原「.htaccess 自检」的扩展版）
+    //
+    // 【为什么必须常驻第一屏】
+    //   `.htaccess` 是点文件，传输链路上最容易丢：FTP 过滤隐藏文件、zip 解压
+    //   跳过点文件、「镜像同步」甚至会把服务器上那份一起删掉 —— 1.3.1 上线当天
+    //   连续踩到两次（vodhub.ct.ws 从未传上去；hop.free.je 传上去之后又没了）。
+    //   这种事**不能等站长去跑 vp.php 才发现**，所以它必须常驻在后台第一屏。
+    //
+    // 【相对 1.3.2 的三处升级】
+    //   ① 不再无条件要求 `.htaccess` —— 数据目录已迁到 Web 根之外时，
+    //      它缺失只是「慢」，不再「泄露」，告警自动降级。
+    //   ② 新增**越权指令自检**：`.htaccess` 里混进 `Options` / `php_value` 会让
+    //      **整站 500**（那两条需要 AllowOverride Options，多数免费空间只给 FileInfo）。
+    //      白屏比「文件丢了」更严重也更难查 —— 站长只会看到一片空白。
+    //      ⚠️ `<IfModule>` 救不了它们：它只看模块在不在，不看 AllowOverride。
+    //   ③ 新增**会话目录泄露面**：`sess_<ID>` 的文件名就是会话 ID，目录可列 +
+    //      文件可下载 = 直接伪造 `vodsite_sid` 进后台，**完全绕过密码**。
+    $vhHt   = guardHtAudit();
+    $vhSess = guardSessionExposure();
+    $vhNeedHt = !DATA_DIR_OUTSIDE;   // 数据在 Web 根内 → .htaccess 是唯一防线
+    ?>
+    <?php if ($vhHt['unsafe']): ?>
+    <!-- 最高优先级：这类问题的表现是「整站白屏」，站长根本进不到这一屏 -->
+    <div class="alert alert-error" style="line-height:1.7">
+        🛑 <b>`.htaccess` 里有 <?= count($vhHt['unsafe']) ?> 条指令会让整站 500（白屏）</b>
+        —— 它们需要主机开 <code>AllowOverride Options</code>，而多数免费虚拟空间只给
+        <code>FileInfo</code>：<br>
+        <?php foreach ($vhHt['unsafe'] as $vhU): ?>
+            <?php [$vhLn, $vhNm, $vhWhy] = array_pad(explode('|', (string) $vhU, 3), 3, ''); ?>
+            &nbsp;&nbsp;· 第 <b><?= h($vhLn) ?></b> 行 <code><?= h($vhNm) ?></code> —— <?= h($vhWhy) ?><br>
+        <?php endforeach; ?>
+        <b>处理：</b>把上面这几行**整段删掉**（连同它所在的 <code>&lt;IfModule&gt;</code> 块），
+        然后刷新本页。<b>站点功能不受影响</b> —— 它们的职责已经改由不需要任何服务器配置的东西兜底：<br>
+        &nbsp;&nbsp;· <code>Options -Indexes</code> → 各目录下的空 <code>index.html</code>
+        （<code>DirectoryIndex index.html</code> 是 Apache <b>主配置的默认值</b>，不要求 AllowOverride）<br>
+        &nbsp;&nbsp;· <code>php_value</code> / <code>php_flag</code> → <code>includes/guard.php</code>
+        的运行时 <code>ini_set()</code>（display_errors / log_errors / error_log，<b>覆盖全部 SAPI</b>）
+    </div>
+    <?php endif; ?>
+
+    <?php if (!$vhHt['unsafe'] && $vhHt['risky']): ?>
+    <div class="alert" style="line-height:1.7;border-left-color:#f0ad4e;background:#fcf8e3">
+        🟡 <b>`.htaccess` 里有 <?= count($vhHt['risky']) ?> 条指令需要 <code>AllowOverride Indexes</code></b>
+        —— 本机现在是通的（否则你连这一页都看不到），但**换一台只给 <code>FileInfo</code>
+        的免费空间就会整站 500**（而 FileInfo 恰恰是 <code>RewriteEngine</code> 必需的那一类）：<br>
+        <?php foreach ($vhHt['risky'] as $vhU): ?>
+            <?php [$vhLn, $vhNm, $vhWhy] = array_pad(explode('|', (string) $vhU, 3), 3, ''); ?>
+            &nbsp;&nbsp;· 第 <b><?= h($vhLn) ?></b> 行 <code><?= h($vhNm) ?></code> —— <?= h($vhWhy) ?><br>
+        <?php endforeach; ?>
+        <b>处理：</b>删掉这几行即可 —— 静态资源缓存由下方
+        <code>&lt;IfModule mod_headers.c&gt;</code> 的 <code>Cache-Control</code> 承担
+        （<b>只要 FileInfo</b>，现代浏览器以它为准，实测功能无差别）。
+        本项目自带的 <code>.htaccess</code> 已经不含这一段。
+    </div>
+    <?php endif; ?>
+
+    <?php if ($vhSess['inside']): ?>
+    <div class="alert alert-error" style="line-height:1.7">
+        🛑 <b>会话目录落在 Web 根之内</b>：<code><?= h($vhSess['path']) ?></code><br>
+        <code>sess_&lt;ID&gt;</code> 的<b>文件名就是会话 ID</b> —— 目录能列、文件能下 =
+        拿到任意一个就能把 <code><?= h(SESSION_NAME) ?></code> cookie 设成它，
+        <b>直接进后台，完全绕过密码</b>。这比 <code>data.db</code> 泄露更直接。<br>
+        <b>处理（按顺序试）：</b>
+        ① 面板「PHP 设置」里把 <code>session.save_path</code> 改到 Web 根之外（首选）；
+        ② 改不了就在 <code>.user.ini</code> 里加一行
+        <code>session.save_path = ../vodhub-data/sessions</code>（CGI/FPM 有效，<b>不依赖 .htaccess</b>）；
+        ③ 两条都不行 → 至少把会话目录权限设为 700，并在本机外定期改后台密码。
+    </div>
+    <?php endif; ?>
+
+    <?php if ($vhNeedHt && !$vhHt['rewrite']): ?>
+    <div class="alert alert-error" style="line-height:1.7">
+        ⚠️ <b>`.htaccess` 不在站点根（或里面没有 rewrite 规则）</b>，
+        而数据目录仍在 Web 根之内 —— 三件事同时失效：<br>
+        ① <b><code>data.db</code> 现在可以被任何人下载</b>（含管理密码哈希与全部接口地址）；<br>
+        ② <code>templates/</code> 下的片段可被直接执行；③ 页面静态直出失效，每一页都要跑 PHP。<br>
+        <b>两条出路，任选其一：</b><br>
+        &nbsp;&nbsp;<b>A（推荐）</b> —— 把数据目录迁到 Web 根之外，从此不再依赖
+        <code>.htaccess</code>：见 <code>docs/deployment.md</code> 的「数据目录」一节；<br>
+        &nbsp;&nbsp;<b>B</b> —— 把升级包里的 <code>.htaccess</code> <b>单独上传</b>到站点根，
+        上传后回来刷新确认本条消失。<br>
+        <b>别用：</b>zip 解压（多数解压器跳过点文件）、镜像/同步上传（本地缺它就会把服务器上那份删掉）、
+        「显示隐藏文件」没打开的 FTP。
+    </div>
+    <?php elseif (!$vhHt['rewrite']): ?>
+    <div class="alert" style="line-height:1.7;border-left-color:#f0ad4e;background:#fcf8e3">
+        ℹ️ <b>`.htaccess` 缺失或没有 rewrite 规则</b>，但数据目录已在 Web 根之外
+        → <b>不会泄露任何东西</b>，只是页面静态直出与静态资源缓存头不生效
+        （每页多 1 个 PHP 进程，约 3 ms，功能完全正常）。<br>
+        想启用加速就单独上传 <code>.htaccess</code>；不传也能跑。
+    </div>
+    <?php endif; ?>
+
+    <p class="muted" style="font-size:13px">
+        🔍 安全基线 ——
+        数据目录 <b><?= DATA_DIR_OUTSIDE ? 'Web 根之外（不依赖 .htaccess）' : 'Web 根内（靠 .htaccess 拦）' ?></b>
+        <code style="font-size:11px"><?= h(DATA_DIR) ?></code> ·
+        .htaccess
+        <b><?php
+            echo $vhHt['unsafe'] ? '⛔ 含确定会 500 的指令'
+                : ($vhHt['risky'] ? '🟡 含需 Indexes 权限的指令'
+                : ($vhHt['verdict'] === 'ok' ? '✅ 正常（仅 FileInfo 类）'
+                : ($vhHt['exists'] ? '⚠️ 无 rewrite' : '❌ 文件不存在')));
+        ?></b>
+        <?= $vhHt['static'] ? '· 静态直出已启用' : '· 静态直出未启用' ?> ·
+        会话目录 <b><?= $vhSess['inside'] ? '⛔ Web 根内' : '✅ Web 根外' ?></b>
+        <code style="font-size:11px"><?= h($vhSess['path']) ?></code> ·
+        目录列表 <b><?= is_file(__DIR__ . '/static/index.html') ? '✅ 已用 index.html 挡住' : '⚠️ 缺 index.html' ?></b>
+    </p>
 
     <!-- ============================= 数据源管理 ============================= -->
     <section class="admin-card">
@@ -627,6 +749,23 @@ $editingGroup = $editGid > 0 ? getGroup($editGid) : null;
                 <input type="checkbox" name="enrich_enabled" value="1" <?= $enrichEnabled ? 'checked' : '' ?>>
                 <span>播放页字段智能归一化（TypeSafe）</span>
             </label>
+            <label class="field">
+                <span>首页补拉预算（秒）</span>
+                <select name="warm_budget">
+                    <?php $curWb = max(0, intval(setting('warm_budget', '6'))); ?>
+                    <option value="0" <?= $curWb === 0 ? 'selected' : '' ?>>0（不自动补拉）</option>
+                    <?php foreach ([1, 2, 3, 4, 5, 6, 8, 10] as $w): ?>
+                        <option value="<?= $w ?>" <?= $curWb === $w ? 'selected' : '' ?>><?= $w ?> 秒<?= $w === 6 ? '（推荐）' : '' ?></option>
+                    <?php endforeach; ?>
+                </select>
+                <small class="muted">
+                    清空接口缓存后，首页要为**每个数据源**各请求一次上游取分类。
+                    这里限制的是**单次请求最多花多少秒**，用满就不再拉 ——
+                    拉不完的下次访问继续，已成功的都已落盘、进度不丢。
+                    <b>先确认你的网关超时</b>：3 秒超时的主机请选 ≤2 秒，否则照样 502；
+                    选 0 = 不自动补拉，首页只显示本地已缓存的分类（没有就提示「无法获取分类」）。
+                </small>
+            </label>
             <label class="field field-wide">
                 <small class="muted">
                     把地区/语言/类型/更新状态这类「同一份数据有多种写法」的字段统一成规范值，
@@ -766,14 +905,18 @@ $editingGroup = $editGid > 0 ? getGroup($editGid) : null;
         </p>
 
         <form class="admin-form" method="post" action="admin.php"
-              onsubmit="return confirm('确定清理勾选的缓存吗？接口缓存与归一化记录清掉后会重新请求上游，页面与图片缓存清掉后会在下次访问时重新生成。')">
+              onsubmit="return confirm('确定清理勾选的缓存吗？\n'
+                  + '· 接口缓存 / 归一化记录：清掉后下次访问要重新请求上游，\n'
+                  + '  首页可能变慢几秒（每个源各撞一次超时），上游不通时会显示「无法获取分类」\n'
+                  + '· 页面缓存 / 图片缓存：清掉后下次访问重新生成，只是慢一点\n'
+                  + '· OPcache：上传文件后没变化时才需要勾，否则别勾')">
             <input type="hidden" name="action" value="clear_cache">
             <label class="field-check">
-                <input type="checkbox" name="clear_api" value="1" checked>
+                <input type="checkbox" name="clear_api" value="1">
                 <span>接口响应缓存（<code>runtime/cache/*.json</code>）</span>
             </label>
             <label class="field-check">
-                <input type="checkbox" name="clear_enrich" value="1" checked>
+                <input type="checkbox" name="clear_enrich" value="1">
                 <span>字段归一化记录（<code>enrich</code> 表）</span>
             </label>
             <label class="field-check">

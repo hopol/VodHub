@@ -54,21 +54,80 @@ php -m | grep -E 'curl|pdo_sqlite'
 
 3. **访问**：打开 `https://你的域名/admin.php`，用默认密码 `admin123` 登录
 
-### 你需要确认的三件事
+### `.htaccess` 现在只用一类权限（1.3.3 起）
 
-`.htaccess` 已经写好了访问控制和静态缓存，但需要：
+`.htaccess` 里**只有 `AllowOverride FileInfo` 一类指令**：
 
 | 模块 | 作用 | 缺了会怎样 |
 |------|------|-----------|
-| `mod_rewrite` | 拦截 `runtime/`、`templates/*.php` 直接访问 | 模板可被 URL 直接读取（**建议确认已开**） |
-| `mod_expires` | 静态资源缓存 | 无缓存头，仍能正常访问 |
-| `mod_headers` | `Cache-Control` | 同上 |
+| `mod_rewrite` | 拦截 `runtime/`、`templates/*.php` 直接访问 + 页面静态直出 | 退化：见下方「数据目录」，功能不受影响 |
+| `mod_headers` | 静态资源 `Cache-Control` | 无缓存头，浏览器退回启发式缓存，功能不受影响 |
 
-所有规则都包在 `<IfModule>` 里，**模块被禁用时会静默跳过，不会导致 500**。
+两个都包在 `<IfModule>` 里，模块被禁用时静默跳过。
+
+> **关键：`.htaccess` 里没有任何需要 `AllowOverride Options` 或 `Indexes` 的指令。**
+>
+> 旧版有 7 条需要 **`Options`**（`Options -Indexes`、`php_flag`、`php_value`），
+> 另有 12 条需要 **`Indexes`**（`ExpiresActive` ×1、`ExpiresByType` ×11）——
+> 在多数只给 `FileInfo` 的免费空间上**同样会整站 500 白屏**。
+> 合计 19 条越权指令。
+> 而 `<IfModule>` 救不了任何一档：它只检查模块是否加载，**不检查 AllowOverride**。
+>
+> | 原指令 | 需要哪类权限 | 现在靠什么 | 为什么不需要 AllowOverride |
+> |---|---|---|---|
+> | `Options -Indexes` | `Options` | 各目录下的空 `index.html` | `DirectoryIndex index.html` 是 Apache **主配置默认值** |
+> | `php_value` / `php_flag` | `Options` | `includes/guard.php` 的 `ini_set()` | PHP 自己的接口，**覆盖全部 SAPI** |
+> | `ExpiresActive` / `ExpiresByType` | **`Indexes`** | `mod_headers` 的 `Cache-Control` | 只要 `FileInfo`；现代浏览器以它为准 |
+>
+> 权限要求因此从「FileInfo + Options + Indexes」降到「**仅 FileInfo**」——
+> 而 FileInfo 正是 `RewriteEngine` 自己要的，**能用 rewrite 的主机就一定能用本文件**，
+> 不存在中间地带。
+
+#### 实测矩阵（Apache/2.4.58，同一份 `.htaccess` 只改主配置）
+
+| `AllowOverride` | 整站 | 说明 |
+|---|---|---|
+| `None` | ✅ 200 | `.htaccess` **完全不解析** —— 没有 500，但访问控制与直出也都没了 |
+| **`FileInfo`** | ✅ **200** | **多数免费空间给的就是这一档，本项目的 `.htaccess` 专为它而写** |
+| `FileInfo Indexes` | ✅ 200 | 要自己加 `ExpiresActive` 就得有 `Indexes`（本项目不带，见下方「注释已全部移除」） |
+| `All` | ✅ 200 | 全部可用 |
+| `Indexes` / `Limit` / `AuthConfig` / `Options`（不含 FileInfo） | ❌ 500 | `RewriteEngine not allowed here` —— 这种主机根本用不了 rewrite |
+
+> 单条实测：`AllowOverride FileInfo` 下
+> `RewriteEngine` 200 ✅、`Header set` 200 ✅、`ExpiresActive` **500** ❌、`Options` **500** ❌。
+
+#### `.htaccess` 里没有任何注释
+
+发布版 `.htaccess` **只含指令，一行注释都没有**（约 2.9 KB / 61 行，全部指令 50 行）：
+
+```bash
+grep -cE '^\s*#' .htaccess   # → 0
+```
+
+这么做不是为了好看 —— 注释越多，出错面越大：`.htaccess` **只认行首 `#` 为注释**，
+`<!-- -->` 会被当成容器标签（报 `Expected </!--> but saw </IfModule>` 直接 500），
+行尾的 `#` 还会把 `RewriteCond` 弄坏。去掉注释就不存在这类坑。
+
+**原先写在注释里的说明已经搬进文档**，改文件前请先看这几处：
+
+| 要知道什么 | 在哪 |
+|---|---|
+| 哪些指令会让整站 500、各属哪类权限 | 本文上方「实测矩阵」+ [故障排查 · 上传后整站 500](troubleshooting.md#上传后整站-500-白屏后台也进不去) |
+| `Header` 必须是 `setifempty` 不能是 `set`（否则盖掉 `img.php` 的长缓存头） | [故障排查 · 图片每次都重新下载](troubleshooting.md#图片每次都重新下载封面特别费流量) |
+| `%{TIME_YMD}` 在 Apache 2.4 不存在、要用 `TIME_YEAR/TIME_MON/TIME_DAY` | [故障排查](troubleshooting.md#静态直出一次都不命中rewrite-轨迹里是-not-matched) |
+| `RewriteCond` 行尾的 `#` 会把条件弄坏 | 本文与 `.htaccess` 同级的规则说明 |
+| 打包时的权限红线（越权指令会被拒绝打进升级包） | `dist/build.sh` 的第 ③ 条校验 |
+
+> 别再往 `.htaccess` 里加注释。要写说明，写文档。
+
+验证方法：
 
 验证方法：
 
 ```bash
+# 整站不能是 500（旧 .htaccess 的越权指令就是这个下场）
+curl -s -o /dev/null -w '%{http_code}\n' https://你的域名/index.php
+
 # 理想情况返回 403
 curl -I https://你的域名/runtime/data.db
 
@@ -76,7 +135,47 @@ curl -I https://你的域名/runtime/data.db
 curl -I https://你的域名/static/style.css
 ```
 
-> 如果你的虚拟主机**禁用了 `.htaccess`**（部分主机要求在面板里勾选「AllowOverride」），请在面板里开启，或改用下面的 Nginx 方案。
+> 如果你的虚拟主机**完全禁用了 `.htaccess`**（`AllowOverride None`），按下面「数据目录」
+> 把数据移出 Web 根即可**安全运行**，代价只是每页多 1 个 PHP 进程（约 3 ms）。
+
+### 数据目录（不依赖 `.htaccess` 的安全基线）
+
+`runtime/` 下是 `data.db`（管理密码哈希 + 上游接口地址）、接口缓存、错误日志。
+Apache 对**非 `.php` 文件**的请求直接读磁盘吐字节，**全程不进 PHP** ——
+所以任何"在 PHP 里判断一下"的拦截都无效，唯一与服务器配置无关的解法是
+**不把它放进 Web 根**。
+
+程序会自动判断（`config.php` 的 `vhResolveDataDir()`）：
+
+| 情形 | 数据目录 | 安全等级 |
+|---|---|---|
+| 环境变量 / 常量指定了路径 | 该路径 | ✅ 不依赖 `.htaccess` |
+| `runtime/data.db` 已存在（老站点） | `runtime/`（**绝不自动搬**） | ⚠️ 靠 `.htaccess` 拦 |
+| 全新安装，站点根的上级可写 | `../vodhub-data/` | ✅ 不依赖 `.htaccess` |
+| 上面都不成 | `runtime/`（回退） | ⚠️ 靠 `.htaccess` 拦 |
+
+后台第一屏「安全基线」与 `vp.php` 的 **I 节**会直接显示当前属于哪一种。
+
+**老站点主动迁移**（推荐，迁完就不再依赖 `.htaccess` 拦数据）：
+
+```bash
+# 1) 建目录（站点根的上一级，Web 访问不到）
+mkdir -p ../vodhub-data && chmod 755 ../vodhub-data
+
+# 2) **移动**（不是复制）数据
+mv runtime/* ../vodhub-data/ && rmdir runtime
+
+# 3) 打开 config.php，取消下面这行的注释并改成实际路径
+#    define('VODHUB_DATA_DIR', '/home/你/vodhub-data');
+
+# 4) 重启 PHP，回来刷新后台「安全基线」
+```
+
+> ⚠️ **面板备份通常只覆盖 Web 根** —— 数据移出去之后，`../vodhub-data/` 要**单独备份**
+> （`data.db` + `-wal` + `-shm` + `sessions/`）。这是物理隔离的真实代价，不能藏。
+>
+> ⚠️ 迁移**必须是移动，不是复制**。只复制的话原地还留着一份旧库，
+> 而程序读的是新位置 —— 看起来像「站点重装了」。
 
 ---
 
@@ -196,9 +295,17 @@ VodHub/
 
 **`.user.ini`**：项目根目录带了一份生产 PHP 配置（关闭错误显示、打开错误日志、
 OPcache 重新校验、会话 GC）。CGI / FPM / LSAPI 主机自动生效；
-**mod_php 主机**由 `.htaccess` 里的 `php_value` 接手；两者都失效时
-`includes/guard.php` 还有一层运行时兜底。需要排障时设环境变量 `VODHUB_DEBUG=1`
-重新打开错误显示。
+**mod_php 主机读不到 `.user.ini`**，而 1.3.3 起 `.htaccess` 也**不再写 `php_value`**
+（那条要 `AllowOverride Options`，会让整站 500）——
+所以 mod_php 主机**只靠 `includes/guard.php` 的运行时 `ini_set()`**，
+它在 `config.php` 那句 `ini_set('display_errors','1')` **之后**执行，把显示关掉，
+**覆盖全部 SAPI**。需要排障时设环境变量 `VODHUB_DEBUG=1` 重新打开错误显示。
+
+| SAPI | `.user.ini` | `.htaccess php_value` | `guard.php` 兜底 |
+|---|---|---|---|
+| `cgi-fpm` / `fpm-fcgi` / `litespeed` | ✅ 生效 | —（已移除） | ✅ |
+| `apache2handler`（mod_php） | ❌ 无效 | —（已移除，会 500） | ✅ **唯一生效的一层** |
+| 任意 | 视配置 | 视配置 | ✅ **永远生效** |
 
 常见权限问题速查 → [故障排查](troubleshooting.md#权限问题)
 
@@ -264,6 +371,22 @@ chmod -R 755 runtime
 | 4 | **添加数据源并点「测试」** | 后台 → 数据源管理 | 确认上游通了再启用 |
 | 5 | **选对容量档位** | 后台 → 站点与维护 → 容量档位 | **磁盘 ≤1 GB 选「紧凑」**（上限 132 MB）。不少主机的自动探测拿到的是整机磁盘而不是你的配额 |
 | 6 | **看一眼极致低功耗状态** | 后台 → 站点与维护 | 确认磁盘 > 8%、页面静态化「已启用」、各项体积在上限内 |
+
+### 1.3.1 升级注意（1.3.0 → 1.3.1）
+
+```bash
+# 1. 备份 —— 老规矩，永远是第一步
+cp -r runtime/ /backup/VodHub-runtime-$(date +%F)/
+
+# 2. 覆盖升级包里的文件（不含 runtime/）
+# 3. 重启 PHP（面板「重启站点」），否则 OPcache 可能继续跑旧代码
+```
+
+- **纯文件覆盖，无数据库变更**：`schema_version` 仍为 5，老库直接可用。
+- **`.htaccess` 必须一起覆盖** —— 这一版修的正是它里面的 `%{TIME_YMD}`
+  （在 Apache 2.4 里不存在，导致静态直出从来没生效过）。只传 PHP 文件等于没修。
+- 升级包里的 `vp.php` 打开跑一次，**B 节 19 行全 `OK` 才算传完**；用完立刻删。
+- 回滚：还原这几个文件即可，数据库与 `c/`、`static/imgcache/` 都不用动。
 
 ### 1.3.0 升级注意
 

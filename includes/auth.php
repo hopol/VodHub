@@ -8,10 +8,33 @@ require_once __DIR__ . '/functions.php';
 require_once __DIR__ . '/guard.php';   // 护栏（磁盘 GC + 限流），见 includes/guard.php
 
 function sessionStart(): void {
-    if (session_status() === PHP_SESSION_NONE) {
-        session_name(SESSION_NAME);
-        session_start();
+    if (session_status() !== PHP_SESSION_NONE) {
+        return;   // 已经在跑，直接用
     }
+    // ---- 头已发出就起不来了，硬调只会往日志里灌 Warning ----
+    //
+    // 触发路径：requireAdmin()/requireAccess() 在鉴权通过后调 sessionRelease()
+    // （放锁，别把锁拖过整页渲染与上游 curl），于是 session_status() 回到 NONE；
+    // 紧接着页面开始输出，而模板里的 csrfToken() 又要 sessionStart() ——
+    // 后台一个页面有十来个 <input name="csrf">，**一次请求就是 20 行 Warning**。
+    //
+    // 这不是「可有可无的噪音」：
+    //   · 错误日志被 guardGcLog() 截断在 2 MB —— 这种刷屏会让日志反复被截，
+    //     真正的故障反而出现在被冲掉的那一段里；
+    //   · 开着 display_errors 时（VODHUB_DEBUG=1 排障），这些字节会**直接混进
+    //     HTML**，把页面冲坏。
+    //
+    // 此时 $_SESSION 里是 release 之前留下的副本，**读它完全够用**；
+    // 真正需要写入的 CSRF 令牌已由 requireAccess()/requireAdmin()
+    // 在放锁之前调 csrfToken() 落盘（见那两个函数），所以渲染阶段不再需要写。
+    if (headers_sent()) {
+        if (!isset($_SESSION) || !is_array($_SESSION)) {
+            $_SESSION = [];   // 本请求从未成功开过会话，给个空数组避免后面读到 undefined
+        }
+        return;
+    }
+    session_name(SESSION_NAME);
+    session_start();
 }
 
 /**
@@ -44,6 +67,7 @@ function isAccessOk(): bool {
 function requireAccess(): void {
     guardTick();          // 顺带做磁盘 GC（内部按 5 分钟节流）
     if (isAccessOk()) {
+        csrfToken();      // ★ 放锁前先把 CSRF 落盘 —— 渲染阶段不会再写会话
         sessionRelease(); // 鉴权通过 → 立刻放锁，别把锁拖到渲染与上游结束
         return;
     }
@@ -78,6 +102,9 @@ function isAdminOk(): bool {
 function requireAdmin(): void {
     guardTick();
     if (isAdminOk()) {
+        csrfToken();      // ★ 放锁前先把 CSRF 落盘 —— 否则渲染阶段那句
+                          //   sessionStart() 会在「头已发」的情况下静默失败，
+                          //   令牌只存在于内存里，下一次 POST 校验就会「表单已过期」
         sessionRelease(); // 后台页面渲染本身很重，更不该全程持锁
         return;
     }
