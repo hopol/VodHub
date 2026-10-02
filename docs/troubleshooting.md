@@ -239,6 +239,52 @@ sqlite3 runtime/data.db "UPDATE settings SET value='0' WHERE key='access_enabled
 
 删完刷新，500 应立刻消失。若仍 500，把 `.htaccess` 改名试一下，确认是不是它引起的。
 
+#### 若 `.htaccess` 里没有越权指令，还是 500 —— 检查**注释写法**
+
+`.htaccess` 报 500 有两个完全不同的原因，**症状一样，但修法不同**：
+
+| 原因 | 判据 | 修法 |
+|------|------|------|
+| 越权指令（上一节） | 指令需要 `Options` / `Indexes` 权限 | 删掉那几行 |
+| **注释写法错误**（本节） | 文件里有 `<!-- -->` | 改成 `#` |
+
+**Apache 的 `.htaccess` 只认行首 `#` 为注释。**
+用 HTML 注释（`<!-- -->`）会被当成指令解析，直接报：
+
+```
+Expected </!--> but saw </IfModule>
+```
+
+**这个坑本项目踩过两次**：1.3.3 记录过一次，1.3.4 打包时又犯了一次 ——
+给图片加 `nosniff` 时顺手写了段 `<!-- -->` 说明注释，用户上传后整站 500。
+
+**正确写法**：
+
+```apache
+# ✅ 对：说明文字用 #
+# 这是给图片加 nosniff 的原因说明
+<FilesMatch "\.(jpg|png|webp)$">
+    Header set X-Content-Type-Options "nosniff"
+</FilesMatch>
+```
+
+```apache
+    <!-- ❌ 错：HTML 注释会让整站 500 -->
+    <FilesMatch "\.(jpg|png)$">
+```
+
+**排查**：`grep -n '<!--' .htaccess`，有输出就是这个问题。
+
+> ⚠ 三条排查命令按这个顺序跑，因为**越权指令更常见**：
+> ```bash
+> grep -nE '^[[:space:]]*(Options|php_flag|php_value|ExpiresActive)' .htaccess   # ① 越权指令
+> grep -n '<!--' .htaccess                                                    # ② 注释写法
+> ```
+> 两条都没输出却仍 500，再往下看其他章节。
+
+**已加进自动化测试**：`tests/test_security.php` 里有两条断言锁死这个坑，
+改动 `.htaccess` 后跑 `php tests/run.php` 会立刻报出来。
+
 ### 图片每次都重新下载（封面特别费流量）
 
 先看响应头：
