@@ -108,8 +108,10 @@ function vhTestRenderHtml(array $list, string $title, float $ms, array $meta = [
     $h .= '<p class="sub">VodHub 行为测试 · 零依赖断言</p></header>';
 
     $h .= '<div class="cards">';
-    $h .= '<div class="card ' . ($fails === [] ? 'c-ok' : 'c-bad') . '">'
-        . '<div class="n">' . ($fails === [] ? '全部通过' : count($fails) . ' 项失败') . '</div>'
+    $broken = !empty($tally) && empty($tally['sound']);
+    $h .= '<div class="card ' . ($broken ? 'c-bad' : ($fails === [] ? 'c-ok' : 'c-bad')) . '">'
+        . '<div class="n">' . ($broken ? '报告不可信'
+            : ($fails === [] ? '全部通过' : count($fails) . ' 项失败')) . '</div>'
         . '<div class="d">' . $pass . ' / ' . $total . ' 项断言</div></div>';
     $h .= '<div class="card"><div class="n">' . $total . '</div><div class="d">断言总数</div></div>';
     $h .= '<div class="card"><div class="n">' . round($ms) . ' ms</div><div class="d">耗时</div></div>';
@@ -193,6 +195,9 @@ section h2{font-size:16px;margin:0 0 12px;padding-bottom:8px;
   white-space:pre-wrap;word-break:break-word}
 .bad .ct{margin-top:7px;color:var(--text-3);font-size:12px;
   font-family:ui-monospace,Menlo,Consolas,monospace}
+.fatal{background:rgba(224,86,86,.16);border:2px solid var(--bad);
+  color:var(--text);border-radius:10px;padding:14px 16px;margin:0 0 18px;font-size:14px}
+.fatal .dim{color:var(--text-2);font-size:13px}
 .note{background:rgba(255,176,32,.12);border:1px solid rgba(255,176,32,.45);
   color:var(--text);border-radius:10px;padding:11px 15px;margin:0 0 18px;font-size:14px}
 section h2 .tag{float:right;font-size:12.5px;font-weight:600;padding:2px 10px;
@@ -253,7 +258,7 @@ function vhTestRunMode(): string {
  * @param array $failed  失败的文件名
  * @param array $notices 环境提示（如 exec 被禁用）
  */
-function vhTestRenderSuite(array $results, array $cases, array $failed, array $notices, float $ms): string {
+function vhTestRenderSuite(array $results, array $cases, array $failed, array $notices, float $ms, array $tally = []): string {
     $e = static fn ($s) => htmlspecialchars((string) $s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 
     $total = count($cases);
@@ -275,6 +280,15 @@ function vhTestRenderSuite(array $results, array $cases, array $failed, array $n
         // 提示文案里允许 **粗体** —— 终端下是 ANSI 之外的纯文本，
         // 网页下要渲染成 <strong>，所以这里做一次极简替换（不做通用 Markdown）。
         $h .= '<div class="note">⚠ ' . str_replace('**', '<strong>', $e($n)) . '</div>';
+    }
+
+    // ⚠ 收集器自检结果 —— 必须在最显眼处，且**优先于**「全部通过」。
+    //   理由：1.3.7 上线后有一项失败而我误报全绿，根因是失败项不打勾、
+    //   汇总又不报总数。这类错误人眼天然查不出，只能让程序自己数。
+    if (!empty($tally) && empty($tally['sound'])) {
+        $h .= '<div class="fatal"><b>⛔ 测试框架故障 —— 下面的结论不可采信</b><br>'
+            . $e((string) $tally['why'])
+            . '<br><span class="dim">收集器出了问题：此时即使显示「全部通过」也没有根据。</span></div>';
     }
 
     $h .= '<div class="cards">';

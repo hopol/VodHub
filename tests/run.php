@@ -37,9 +37,28 @@ if (!defined('VHTEST_EMBEDDED')) {
     define('VHTEST_EMBEDDED', true);   // 让 finish() 不 exit，只交回结果
 }
 
-$dir    = __DIR__;
-$isCli  = PHP_SAPI === 'cli' || PHP_SAPI === 'phpdbg';
-$filter = $argv[1] ?? (isset($_GET['f']) ? (string) $_GET['f'] : '');
+$dir   = __DIR__;
+$isCli = PHP_SAPI === 'cli' || PHP_SAPI === 'phpdbg';
+
+// ---- 参数解析：--json（机器可读）/ 可选的筛选词 ----
+//
+// 为什么要有 --json：**验证不该靠人眼看**。
+// 1.3.7 的教训是「失败项不打勾，汇总又不报总数」——
+// 眼睛只会数有颜色的那些，于是漏报了一次失败。
+// 有了 JSON，CI 与脚本能读到确切的 pass/fail/total，
+// 不再需要任何人（或任何模型）从终端文本里推断结论。
+$asJson = false;
+$filter = '';
+foreach (array_slice($argv, 1) as $arg) {
+    if ($arg === '--json') {
+        $asJson = true;
+    } else {
+        $filter = (string) $arg;
+    }
+}
+if ($filter === '' && isset($_GET['f'])) {
+    $filter = (string) $_GET['f'];
+}
 
 $files = glob($dir . '/test_*.php') ?: [];
 sort($files);
@@ -108,16 +127,98 @@ foreach ($files as $file) {
 
 $elapsed = round((microtime(true) - $started) * 1000, 1);
 
-/** 统计总项数与失败项数（用于汇总行） */
-$suiteTotal = 0;
-$suiteFails = 0;
-foreach ($results as $r) {
-    foreach ($r['cases'] as $c) {
-        $suiteTotal++;
-        if (empty($c['ok'])) {
-            $suiteFails++;
+/**
+ * 统计总项数与失败项数，并**自检收集器是否可信**。
+ *
+ * ⚠⚠ **这段自检是「验证闭环」的核心，理由来自一次真实误报**：
+ *
+ *   1.3.7 上线后测试报告有一项失败，而我在本地说「195 项全绿」。
+ *   原因：失败项**不打勾**，而当时的汇总行只报「全部通过」不报总数 ——
+ *   我数了 ✓ 的个数（195），当成总数，于是漏掉了那个 ✗。
+ *   **195 是通过数，196 才是总数。**
+ *
+ *   这类错误**人眼天然查不出**：眼睛只数有颜色的那些。
+ *   所以必须让程序自己数，并在这里断言「通过数 + 失败数 == 总数」——
+ *   一旦不等，说明收集器漏了用例，**整个报告不可信**，
+ *   此时必须报「框架故障」而不是「全部通过」。
+ *
+ * @return array{total:int, fails:int, pass:int, sound:bool, why:string}
+ */
+function vhTally(array $results): array {
+    $total = 0;
+    $fails = 0;
+    $pass  = 0;
+    $empty = [];
+
+    foreach ($results as $name => $r) {
+        if (!is_array($r['cases'] ?? null)) {
+            $empty[] = $name;
+            continue;
+        }
+        foreach ($r['cases'] as $c) {
+            $total++;
+            if (empty($c['ok'])) {
+                $fails++;
+            } else {
+                $pass++;
+            }
         }
     }
+
+    // 自检一：每个文件都必须交回用例数组（空数组是合法的，但不能缺失）
+    if ($empty !== []) {
+        return ['total' => $total, 'fails' => $fails, 'pass' => $pass, 'sound' => false,
+                'why' => '这些文件没有交回用例明细：' . implode(', ', $empty)];
+    }
+
+    // 自检二：算术恒等 —— 通过数 + 失败数 必须等于总数
+    if ($pass + $fails !== $total) {
+        return ['total' => $total, 'fails' => $fails, 'pass' => $pass, 'sound' => false,
+                'why' => "收集器算术不符：通过 {$pass} + 失败 {$fails} ≠ 总数 {$total}"];
+    }
+
+    // 自检三：不能一个用例都没收集到（全部文件被跳过 / glob 失配 / require 静默失败）
+    if ($total === 0) {
+        return ['total' => 0, 'fails' => 0, 'pass' => 0, 'sound' => false,
+                'why' => '一个用例都没收集到 —— 测试可能被整体跳过了'];
+    }
+
+    return ['total' => $total, 'fails' => $fails, 'pass' => $pass, 'sound' => true, 'why' => ''];
+}
+
+$tally      = vhTally($results);
+$suiteTotal = $tally['total'];
+$suiteFails = $tally['fails'];
+
+// ---- --json：机器可读输出（供 CI 与脚本消费）----
+if ($asJson) {
+    header('Content-Type: application/json; charset=utf-8');
+    $out = [
+        'sound'       => $tally['sound'],
+        'why'         => $tally['why'],
+        'total'       => $tally['total'],
+        'pass'        => $tally['pass'],
+        'fails'       => $tally['fails'],
+        'files'       => count($files),
+        'failedFiles' => $failed,
+        'elapsedMs'   => $elapsed,
+        'php'         => PHP_VERSION,
+        'notices'     => $notices,
+        'cases'       => [],
+    ];
+    foreach ($results as $name => $r) {
+        foreach (($r['cases'] ?? []) as $c) {
+            $out['cases'][] = [
+                'suite' => $name,
+                'ok'    => (bool) ($c['ok'] ?? false),
+                'name'  => (string) ($c['name'] ?? ''),
+                'msg'   => (string) ($c['msg'] ?? ''),
+                'trace' => (string) ($c['trace'] ?? ''),
+            ];
+        }
+    }
+    echo json_encode($out, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+    exit($tally['sound'] && $tally['fails'] === 0 ? 0 : 1);
 }
 
 // ---- CLI：各文件自己的彩色输出 + 末尾汇总 ----
@@ -126,11 +227,13 @@ if ($isCli) {
         echo "\n\033[1m── {$name} \033[0m\n" . $r['text'] . "\n";
     }
     echo "\n" . str_repeat('─', 60) . "\n";
-    // ⚠ 汇总必须**同时给出总项数与失败项数**。
-    //   1.3.7 之前这里只按「文件是否失败」输出「全部通过」，
-    //   于是「195 个✓ + 1 个✗」也会显示「全部通过」——
-    //   我据此误判「全绿」，漏掉了那个失败项整整一轮。
-    if ($suiteFails === 0) {
+    // ⚠ 三层判定，**框架故障优先于测试失败** ——
+    //   收集器不可信时，「全部通过」这句话本身就是没根据的。
+    if (!$tally['sound']) {
+        echo "\033[41;97m ⛔ 测试框架故障：报告不可信 \033[0m\n";
+        echo "\033[31m   " . $tally['why'] . "\033[0m\n";
+        echo "\033[90m   （收集器出了问题，此时任何「通过/失败」结论都不可采信）\033[0m\n";
+    } elseif ($suiteFails === 0) {
         echo "\033[32m✅ 全部通过：" . count($files) . " 个测试文件，"
            . "{$suiteTotal} 项断言，{$elapsed} ms\033[0m\n";
     } else {
@@ -140,7 +243,7 @@ if ($isCli) {
             echo "\033[31m   涉及文件：" . implode(', ', $failed) . "\033[0m\n";
         }
     }
-    exit($suiteFails === 0 ? 0 : 1);
+    exit($tally['sound'] && $suiteFails === 0 ? 0 : 1);
 }
 
 // ---- 网页：汇总成一份 HTML ----
@@ -153,5 +256,5 @@ foreach ($results as $name => $r) {
 
 header('Content-Type: text/html; charset=utf-8');
 header('Cache-Control: no-store, no-cache, must-revalidate');   // 刷新即重跑
-echo vhTestRenderSuite($results, $all, $failed, $notices, $elapsed);
-exit($failed === [] ? 0 : 1);
+echo vhTestRenderSuite($results, $all, $failed, $notices, $elapsed, $tally);
+exit($tally['sound'] && $failed === [] ? 0 : 1);

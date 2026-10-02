@@ -218,6 +218,7 @@ $editingGroup = $editGid > 0 ? getGroup($editGid) : null;
     //      文件可下载 = 直接伪造 `vodsite_sid` 进后台，**完全绕过密码**。
     $vhHt   = guardHtAudit();
     $vhSess = guardSessionExposure();
+    $vhTls  = guardTlsAudit();      // 出站 TLS 校验状态（1.3.5 加函数，V2 补接线）
     $vhNeedHt = !DATA_DIR_OUTSIDE;   // 数据在 Web 根内 → .htaccess 是唯一防线
     ?>
     <?php if ($vhHt['unsafe']): ?>
@@ -306,8 +307,21 @@ $editingGroup = $editGid > 0 ? getGroup($editGid) : null;
         <?= $vhHt['static'] ? '· 静态直出已启用' : '· 静态直出未启用' ?> ·
         会话目录 <b><?= $vhSess['inside'] ? '⛔ Web 根内' : '✅ Web 根外' ?></b>
         <code style="font-size:11px"><?= h($vhSess['path']) ?></code> ·
-        目录列表 <b><?= is_file(__DIR__ . '/static/index.html') ? '✅ 已用 index.html 挡住' : '⚠️ 缺 index.html' ?></b>
+        目录列表 <b><?= is_file(__DIR__ . '/static/index.html') ? '✅ 已用 index.html 挡住' : '⚠️ 缺 index.html' ?></b> ·
+        出站证书 <b><?= $vhTls['verify'] ? '✅ 已校验' : '⛔ 未校验' ?></b>
     </p>
+
+    <?php if (!$vhTls['verify']): ?>
+    <div class="alert alert-error">
+        <b>⚠️ 当前已关闭上游 HTTPS 证书校验</b><br>
+        数据源地址（常含采集密钥）、影片元数据与播放地址的往来流量
+        <b>可被中间人读取与篡改</b>。<br>
+        恢复方式：删除或改回 <code>config.php</code> 里的
+        <code>define('VODHUB_TLS_VERIFY', false);</code>
+        （即取消该行注释），然后重启 PHP。
+        排障详见 <code>docs/troubleshooting.md</code> 的「出站连接」章节。
+    </div>
+    <?php endif; ?>
 
     <!-- ============================= 数据源管理 ============================= -->
     <section class="admin-card">
