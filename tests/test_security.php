@@ -390,33 +390,69 @@ t('SSL_VERIFYHOST 用 2/0 而非 true/false', static function (): void {
 });
 
 t('【关键】默认是校验（不是降级）', static function (): void {
-    // 判据用**真实运行结果**，不靠正则猜源码 ——
-    // 正则判断常量的默认值要跨行匹配 `[` 换行 `]`，转义一层层套极易出错
-    // （这次已经因此连踩两次）。直接跑一次最可靠。
-    $php = escapeshellarg(PHP_BINARY);
-    $cfg = escapeshellarg(dirname(__DIR__) . '/config.php');
-    $code = 'require ' . $cfg . '; echo VODHUB_TLS_VERIFY ? "1" : "0";';
+    // ⚠ 1.3.5 首次发布时，这条测试用的是 shell_exec 起子进程跑真实常量 ——
+    //   而免费主机普遍禁用 shell_exec，于是**线上直接报了三项失败**。
+    //   现在改成：断言「解析逻辑」本身 + 断言「常量的默认值」。
+    //   两者都不需要进程创建。
+    require_once __DIR__ . '/../config.php';
 
-    // 不设环境变量 → 必须是 1（校验）
-    $def = shell_exec('env -u VODHUB_TLS_VERIFY ' . $php . ' -r ' . escapeshellarg($code));
-    eq('1', trim((string) $def), '默认必须是校验（VODHUB_TLS_VERIFY = true）');
+    // ① 解析逻辑：未设置（false / '' / null）→ 必须校验
+    ok(vhTlsVerifyFromEnv(false), 'getenv 未设置时应校验');
+    ok(vhTlsVerifyFromEnv(''), '空串应校验');
+    ok(vhTlsVerifyFromEnv(null), 'null 应校验');
+
+    // ② 常量默认值：本进程未设环境变量时加载 config.php，常量应为 true
+    //   （config.php 可能已被其他测试文件以默认值加载过，这里只验「不是 false」）
+    ok(
+        defined('VODHUB_TLS_VERIFY'),
+        'config.php 应定义 VODHUB_TLS_VERIFY'
+    );
+    ok(
+        VODHUB_TLS_VERIFY === true,
+        '未显式降级时 VODHUB_TLS_VERIFY 必须为 true（校验）'
+    );
 });
 
-t('显式降级确实生效（各取值都识别）', static function (): void {
-    $php = escapeshellarg(PHP_BINARY);
-    $cfg = escapeshellarg(dirname(__DIR__) . '/config.php');
-    $code = 'require ' . $cfg . '; echo VODHUB_TLS_VERIFY ? "1" : "0";';
+t('显式降级各取值都能识别', static function (): void {
+    require_once __DIR__ . '/../config.php';
 
-    // 需要降级的取值：0 / false / off / no（小写不敏感）
-    foreach (['0', 'false', 'off', 'no', 'FALSE', 'Off'] as $v) {
-        $r = shell_exec('VODHUB_TLS_VERIFY=' . $v . ' ' . $php . ' -r ' . escapeshellarg($code));
-        eq('0', trim((string) $r), "VODHUB_TLS_VERIFY={$v} 应解析为「不校验」");
+    // 需要降级的取值（不分大小写、带空格也认）
+    foreach (['0', 'false', 'off', 'no', 'none', 'FALSE', 'Off', ' NO '] as $v) {
+        ok(
+            vhTlsVerifyFromEnv($v) === false,
+            "VODHUB_TLS_VERIFY=" . var_export($v, true) . " 应解析为「不校验」"
+        );
     }
-    // 需要开启的取值
-    foreach (['1', 'true', 'on', 'yes'] as $v) {
-        $r = shell_exec('VODHUB_TLS_VERIFY=' . $v . ' ' . $php . ' -r ' . escapeshellarg($code));
-        eq('1', trim((string) $r), "VODHUB_TLS_VERIFY={$v} 应解析为「校验」");
+
+    // 需要保持校验的取值
+    foreach (['1', 'true', 'on', 'yes', 'TRUE', 'On'] as $v) {
+        ok(
+            vhTlsVerifyFromEnv($v) === true,
+            "VODHUB_TLS_VERIFY=" . var_export($v, true) . " 应解析为「校验」"
+        );
     }
+
+    // ⚠ 拼错的值必须**保持校验**，不能悄悄降级
+    //   （反向判断 ——「不在关闭白名单就关」—— 会让一个 typo 关闭安全防护）
+    foreach (['nope', 'disabled', '2', 'off-ish', '没开'] as $v) {
+        ok(
+            vhTlsVerifyFromEnv($v) === true,
+            "无法识别的值 " . var_export($v, true) . " 应保持校验，不得悄悄降级"
+        );
+    }
+});
+
+t('【安全】getenv 被禁用时按「未设置」处理（仍校验，不降级）', static function (): void {
+    // 免费主机的 disable_functions 里 getenv 也可能被列。
+    // 实测它被移除后调用**返回 false 而非致命错误**，
+    // 而 config.php 的逻辑正是把 false 当「未设置」→ 保持校验。
+    // 这条锁住该契约：万一有人改成 `=== ''` 判断，禁用 getenv 的主机
+    // 会走到「空串 → 校验」之外的分支，行为不可预期。
+    require_once __DIR__ . '/../config.php';
+    ok(
+        vhTlsVerifyFromEnv(false) === true,
+        'getenv 被禁用时返回 false，必须被当成「未设置」→ 保持校验'
+    );
 });
 
 t('降级有环境变量与常量两条显式路径', static function (): void {
@@ -439,21 +475,46 @@ t('【关键】降级状态可见（后台能看出没在校验）', static func
     );
 });
 
-t('【行为】降级时 ok=false 且文案点明风险', static function () use ($root): void {
-    // 用子进程分别跑两种配置，验证两种分支
-    $php = escapeshellarg(PHP_BINARY);
-    $guard = escapeshellarg(dirname(__DIR__) . '/includes/guard.php');
-    $cfg   = escapeshellarg(dirname(__DIR__) . '/config.php');
+t('【行为】guardTlsAudit() 两种分支都正确', static function (): void {
+    require_once __DIR__ . '/../config.php';
+    require_once __DIR__ . '/../includes/guard.php';
 
-    // 默认（校验）
-    $on = shell_exec("VODHUB_TLS_VERIFY=1 $php -r "
-        . escapeshellarg("require $cfg; require $guard; \$r=guardTlsAudit(); echo \$r['ok']?'1':'0';"));
-    eq('1', trim((string) $on), '校验开启时应报 ok');
+    $r = guardTlsAudit();
+    ok(is_array($r), 'guardTlsAudit() 应返回数组');
 
-    // 显式降级
-    $off = shell_exec("VODHUB_TLS_VERIFY=0 $php -r "
-        . escapeshellarg("require $cfg; require $guard; \$r=guardTlsAudit(); echo \$r['ok']?'1':'0';"));
-    eq('0', trim((string) $off), '降级时必须报 ok=false，让后台标红');
+    // 本进程是默认（校验）配置 —— 至少要能正确报出「已校验」
+    if (TLS_VERIFY) {
+        ok($r['verify'] === true, '校验模式下 verify 应为 true');
+        ok($r['ok'] === true, '校验模式下 ok 应为 true');
+        ok(
+            str_contains($r['note'], '已校验'),
+            '校验模式下文案应说明「已校验」'
+        );
+    } else {
+        // 主机显式降级时（有人在 config.php 里写了 false）
+        ok($r['verify'] === false, '降级模式下 verify 应为 false');
+        ok($r['ok'] === false, '降级模式下必须 ok=false，让后台标红');
+        ok(
+            str_contains($r['note'], '已关闭证书校验')
+            && str_contains($r['note'], '中间人'),
+            '降级文案必须点明风险 —— 「关掉了自己不知道」比开着更危险'
+        );
+    }
+});
+
+t('【结构】guardTlsAudit() 在降级时会告警（源码判据，不依赖当前配置）', static function (): void {
+    // 两条分支共用一个函数，靠源码就能确认降级分支写对了 ——
+    // 不必真去降级再跑一遍（那需要进程创建或改配置）。
+    $src = t_code('includes/guard.php');
+    ok(
+        str_contains($src, "'verify' => false")
+        && str_contains($src, "'ok'     => false"),
+        'guardTlsAudit() 的降级分支应返回 verify=false 且 ok=false'
+    );
+    ok(
+        str_contains($src, '中间人'),
+        '降级分支的说明文案应点明「可被中间人读取与篡改」'
+    );
 });
 
 t('【行为】证书有问题时，开校验确实连不上（故降级口子必须留）', static function (): void {

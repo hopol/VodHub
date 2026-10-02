@@ -66,9 +66,20 @@ php tests/run.php admin        # 只跑后台动作
 
 | 主机环境 | 网页 | 命令行 |
 |---------|------|--------|
-| `exec` 与 `proc_open` 都可用 | ✅ 152 项 | ✅ 152 项 |
-| 只禁 `exec` | ✅ 152 项 | ✅ 152 项 |
-| **两个都禁（多数免费主机）** | ✅ **152 项** | ✅ **152 项** |
+| 全部可用 | ✅ 195 项 | ✅ 195 项 |
+| 禁 `shell_exec` / `exec` / `proc_open` | ✅ 195 项 | ✅ 195 项 |
+| 再加禁 `popen` / `passthru` / `system` / `pcntl_exec` | ✅ 195 项 | ✅ 195 项 |
+| 再加禁 `getenv` | ✅ 195 项（`getenv` 返回 false，按「未设置」处理） | 同 |
+
+> ⚠ **写测试时必须守住的一条**：**不要在测试里用 `shell_exec` / `exec` 起子进程。**
+> 上一轮刚把测试改成同进程（理由正是「免费主机禁用这些函数」），
+> 转头却在测试内部用 `shell_exec` 验证常量 —— 1.3.5 首次发布时线上直接报了三项失败。
+>
+> 需要「同一进程里做不到」的事（比如常量只能 define 一次）？
+> **把判断抽成纯函数**（见 `config.php` 的 `vhTlsVerifyFromEnv`），
+> 测试直接调它，覆盖所有取值且零外部依赖。
+>
+> 验证手段：`php -d disable_functions=shell_exec,exec,proc_open tests/run.php`
 
 ## 为什么不用 PHPUnit
 

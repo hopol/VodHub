@@ -148,6 +148,59 @@ CURLOPT_FOLLOWLOCATION => false,   // 现在
   顺带修掉一个 Web 端致命错误：`STDOUT` 常量只在 CLI 下存在，
   浏览器访问时直接 `Fatal error`（这个 bug 命令行下测不出来）。
 
+### 修正：测试里的 `shell_exec` 导致免费主机上三项失败
+
+**1.3.5 首次发布时，线上测试报告报了三项失败：**
+
+```
+✗【关键】默认是校验（不是降级）    Call to undefined function shell_exec()
+✗ 显式降级确实生效（各取值都识别）   Call to undefined function shell_exec()
+✗【行为】降级时 ok=false 且文案点明风险  Call to undefined function shell_exec()
+```
+
+**原因很讽刺**：上一轮刚把测试从「开子进程」改成「全程同进程」，
+理由正是「免费主机普遍禁用 `exec()` / `proc_open()`」——
+**转头我却在测试内部用 `shell_exec` 起子进程去验证常量。**
+自己定的规矩自己没遵守。
+
+**根因**：`VODHUB_TLS_VERIFY` 是**常量**，一个进程里只能 `define` 一次，
+所以当时只能起子进程、用不同环境变量分别加载 `config.php` 来试。
+子进程一被禁用，这条路就断了。
+
+**修法**：把取值判断从 `config.php` 顶层**抽成纯函数**：
+
+```php
+function vhTlsVerifyFromEnv($v): bool {
+    if ($v === false || $v === '' || $v === null) {
+        return true;                       // 未设置 → 校验（安全默认）
+    }
+    return !in_array(strtolower(trim((string) $v)),
+        ['0', 'false', 'off', 'no', 'none'], true);
+}
+```
+
+现在测试直接调它，**零外部依赖、零进程创建**，所有取值都能覆盖。
+
+**顺带补上一条安全设计**：判定是**白名单反向**的 ——
+只有明确列出的 `0/false/off/no/none` 才降级，**其余一律保持校验**。
+若反过来写成「不在开启白名单就关闭」，一个拼错的值（`nope`、`disabled`）
+就会悄悄关掉安全防护。
+
+**顺带发现并锁住一条契约**：`getenv` 也可能在 `disable_functions` 里，
+实测被移除后**返回 `false` 而非抛错**。`vhTlsVerifyFromEnv(false)` 返回 `true`
+（保持校验），这个行为已写成断言 —— 免得有人把判断改成 `=== ''`
+导致禁用 getenv 的主机走到不可预期的分支。
+
+**实测**（用 `-d disable_functions=` 模拟主机环境）：
+
+| 环境 | 结果 |
+|---|---|
+| 正常 | ✅ 195 项全绿 |
+| 禁 `shell_exec,exec,proc_open` | ✅ 195 项全绿 |
+| 再加禁 `popen,passthru,system,pcntl_exec,posix_kill` | ✅ 195 项全绿 |
+
+测试 190 → 195 项。
+
 ### 修复：三处出站请求写死关闭证书校验（安全默认值改为校验）
 
 `img.php`、`includes/enrich.php`、`includes/client.php` 此前都是

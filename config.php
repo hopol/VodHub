@@ -48,7 +48,7 @@ foreach (['curl', 'pdo_sqlite'] as $requiredExt) {
 define('APP_NAME', '影视聚合站');
 
 // 版本号（与 CHANGELOG.md 保持一致）
-define('APP_VERSION', '1.3.5');
+define('APP_VERSION', '1.3.6');
 
 // ================================================================
 // 数据目录（安全基线 · 无 .htaccess 也能守住的那一条）
@@ -244,11 +244,34 @@ define('DEFAULT_ADMIN_PASSWORD', 'admin123');
  *   define('VODHUB_TLS_VERIFY', false);
  * 或环境变量 VODHUB_TLS_VERIFY=0
  */
+if (!function_exists('vhTlsVerifyFromEnv')) {
+    /**
+     * 由环境变量值解析「是否校验证书」。
+     *
+     * 抽成纯函数是**为了可测**：常量在一个进程里只能 define 一次，
+     * 若把判断写在 config.php 顶层，测试就只能靠 shell_exec 起子进程去试 ——
+     * 而免费主机普遍禁用它（1.3.5 首次发布就因此报了三项失败）。
+     * 抽出来后测试直接调它，覆盖所有取值且零外部依赖。
+     *
+     * @param string|false $v getenv() 的返回值
+     * @return bool true = 校验证书（安全默认）
+     */
+    function vhTlsVerifyFromEnv($v): bool {
+        if ($v === false || $v === '' || $v === null) {
+            return true;                       // 未设置 → 校验（安全默认）
+        }
+        $s = strtolower(trim((string) $v));
+        if ($s === '') {
+            return true;
+        }
+        // 明确列出的「关闭」取值才降级；其余（含 1/true/on/yes）都保持校验。
+        // 反过来做（不在白名单就关闭）会让拼错的值悄悄关掉安全防护。
+        return !in_array($s, ['0', 'false', 'off', 'no', 'none'], true);
+    }
+}
+
 if (!defined('VODHUB_TLS_VERIFY')) {
-    $vhTlsEnv = getenv('VODHUB_TLS_VERIFY');
-    define('VODHUB_TLS_VERIFY', ($vhTlsEnv === false || $vhTlsEnv === '')
-        ? true                      // 默认：校验
-        : !in_array(strtolower((string) $vhTlsEnv), ['0', 'false', 'off', 'no'], true));
+    define('VODHUB_TLS_VERIFY', vhTlsVerifyFromEnv(getenv('VODHUB_TLS_VERIFY')));
 }
 
 // 降级状态是否对外可见（后台与 vp.php 会提示「当前未校验证书」）
