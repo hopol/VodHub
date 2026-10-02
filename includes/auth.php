@@ -33,8 +33,52 @@ function sessionStart(): void {
         }
         return;
     }
+    // ---- Cookie 安全属性（1.3.4 起）----
+    //
+    // 此前 session_start() 前什么都没设，三项属性全缺：
+    //   · HttpOnly 缺 → JS 可读会话 ID。任何 XSS（含 4.3 那个 SVG 落盘面）
+    //                   都能直接偷走会话 —— 单修 SVG 不够，这一条必须一起修。
+    //   · SameSite 缺 → 依赖 PHP 默认（""），不阻止跨站发送，
+    //                   于是 verifyCsrf() 那道令牌校验少了一层纵深。
+    //   · Secure 缺   → HTTP 访问时 Cookie 明文传输。
+    //
+    // ⚠ **secure 绝不能写死 true**：本项目大量部署在纯 HTTP 的免费主机上，
+    //   写死会导致 Cookie 发不出去、**登录完全失效**（表现为「密码对但进不去」，
+    //   极难查）。必须按当前请求动态判断，这正是本项目反复强调的
+    //   「免费主机什么都可能」。
+    //
+    // ⚠ 必须放在 session_start() **之前** —— 之后设置无效。
+    session_set_cookie_params([
+        'httponly' => true,                                   // 防 JS 读取会话 ID
+        'samesite' => 'Lax',                                  // 防跨站发送；POST 天然被阻断
+        'secure'   => vhIsHttpsRequest(),                  // 仅 HTTPS 下加
+        'path'     => '/',
+    ]);
     session_name(SESSION_NAME);
     session_start();
+}
+
+/**
+ * 当前请求是否走 HTTPS。
+ *
+ * 逐项判断而不是只看 $_SERVER['HTTPS']：
+ *   · 有的主机把它置成 'off'；
+ *   · 反向代理（Nginx / openresty / Cloudflare）会在
+ *     X-Forwarded-Proto 里透传真实协议 —— 免费主机的 openresty 前置很常见。
+ */
+function vhIsHttpsRequest(): bool {
+    if (!empty($_SERVER['HTTPS']) && strtolower((string) $_SERVER['HTTPS']) !== 'off') {
+        return true;
+    }
+    if (isset($_SERVER['SERVER_PORT']) && (int) $_SERVER['SERVER_PORT'] === 443) {
+        return true;
+    }
+    // 反向代理透传：只在明确写着 https 时才认，避免伪造头把 Cookie 降级成不加密
+    $xfp = strtolower(trim((string) ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')));
+    if ($xfp !== '' && explode(',', $xfp)[0] === 'https') {
+        return true;
+    }
+    return false;
 }
 
 /**

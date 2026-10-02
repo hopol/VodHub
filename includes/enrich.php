@@ -248,7 +248,7 @@ function enrichRequest(array $detail): array {
     }
 
     // 5) 更新状态句式兜底（「HD」「HD中字」这类正则判不了）
-    if (normalizeRemarks((string) ($detail['vod_remarks'] ?? '')) === null) {
+    if (normalizeRemarks($detail['vod_remarks'] ?? null) === null) {
         $q['update_status'] = [
             'type'         => 'choice',
             'instructions' => '根据 `vod.remarks` 与 `vod.state` 判断这部作品的更新状态。',
@@ -363,7 +363,7 @@ function enrichInterpret(array $detail, array $answers): array {
     }
 
     // 更新状态
-    $code = normalizeRemarks((string) ($detail['vod_remarks'] ?? ''));
+    $code = normalizeRemarks($detail['vod_remarks'] ?? null);
     $map  = ['finished' => '已完结', 'ongoing' => '连载中', 'single' => '单片', 'teaser' => '非正片'];
     if ($code !== null) {
         $out['update_status']      = $code;

@@ -56,7 +56,17 @@ function imgCacheFileName(string $url, string $mime = ''): string {
 
 /** 已知安全的图片扩展名白名单 */
 function imgCacheExts(): array {
-    return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'bmp', 'svg', 'ico'];
+    // ⚠ **刻意没有 svg**（1.3.4 起）：
+    //   SVG 属于 image/*，img.php 的「只放行图片类响应」拦不住它；
+    //   而它一旦落盘到 `static/imgcache/*.svg`（**在 Web 根内、Apache 直接可访问**），
+    //   里面可以内嵌 `<script>` 或 `<svg onload=...>`，
+    //   任何人访问那个 URL 都会**以本站同源身份执行脚本** —— 存储型 XSS。
+    //   全链路没有任何内容消毒，故从落盘白名单除掉是成本最低、影响最小的修法。
+    //
+    //   不影响 SVG 正常显示：img.php 仍会**实时返回** SVG 字节（自己不落盘），
+    //   只是不再缓存到磁盘。影视站封面本就极少是 SVG。
+    //   若将来确需落盘，必须先做真正的消毒（去 script / 事件属性 / foreignObject）。
+    return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'bmp', 'ico'];
 }
 
 /** Content-Type → 扩展名；未知类型返回 bin（无扩展名则无法被当脚本执行） */
@@ -66,7 +76,9 @@ function imgCacheExt(string $mime): string {
         'image/jpeg' => 'jpg', 'image/jpg' => 'jpg',
         'image/png'  => 'png', 'image/gif' => 'gif',
         'image/webp' => 'webp', 'image/avif' => 'avif',
-        'image/bmp'  => 'bmp', 'image/svg+xml' => 'svg',
+        'image/bmp'  => 'bmp',
+        // ⚠ image/svg+xml 刻意不映射 —— 落盘即存储型 XSS 面，见 imgCacheExts() 说明
+        // 'image/svg+xml' => 'svg',
         'image/x-icon' => 'ico', 'image/vnd.microsoft.icon' => 'ico',
     ];
     return $map[$mime] ?? 'bin';
@@ -153,7 +165,11 @@ function imgCacheMimeForPath(string $path): string {
         'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg',
         'png' => 'image/png',  'gif' => 'image/gif',
         'webp' => 'image/webp', 'avif' => 'image/avif',
-        'bmp' => 'image/bmp',  'svg' => 'image/svg+xml',
+        'bmp' => 'image/bmp',
+        // 保留读取映射：1.3.4 之前可能已落过 .svg，
+        // 反查表要认识它，否则 imgCacheMimeForPath() 会 fallback 成 image/jpeg，
+        // 浏览器拿到错误 MIME。**只影响读取，不影响能否落盘。**
+        'svg' => 'image/svg+xml',
         'ico' => 'image/x-icon',
     ];
     return $map[$ext] ?? 'image/jpeg';

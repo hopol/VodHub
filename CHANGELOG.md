@@ -5,7 +5,262 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [1.3.4] - 2026-10-03
+
+**安全修复版本。** 三处此前未识别的可利用缺陷，其中一处已通过本地复现实验证实。
+
+### 修复：图片代理 SSRF 绕过（重定向目标从不复检）
+
+**这是本次最重要的一条，已实测可利用。**
+
+`img.php` 对**原始 URL 的 host** 做了三重校验（协议 / 白名单 / 内网地址，
+其中第三层还做了 DNS 解析后逐 IP 校验）——这部分写得很好。
+但随后：
+
+```php
+CURLOPT_FOLLOWLOCATION => true,   // 修复前
+CURLOPT_MAXREDIRS      => 3,
+```
+
+curl 会**自动跟随最多 3 次重定向，而重定向的目标从未被重新校验**。
+校验发生在第 2 层，执行发生在抓取，**两者之间隔着一个攻击者完全可控的 302**。
+
+**攻击路径**：控制一个公网域名（能通过校验）→ 返回 `302 Location: http://127.0.0.1/...`
+→ 三重校验全部通过（它只看过那个公网域名）→ curl 抓回内网资源并原样返回。
+
+而 `img.php` 是**无需登录的前台公开接口**，且图片白名单**留空即不限制主机**
+（这是项目的有意设计，因为"很多人并不知道图片域名是什么"），
+于是默认攻击面是全网。免费主机通常与数据库、面板同机。
+
+**本地复现实验**：`127.0.0.1` 上起两个服务模拟「公网域名 → 内网目标」，
+`curl -L --max-redirs 3`（与原配置等价）**命中内网 canary**。
+
+**修法**：关掉 curl 自动跟随，改由 `img.php` 自己处理每一跳，
+**对新目标重跑完整三重校验**才继续。
+
+```php
+CURLOPT_FOLLOWLOCATION => false,   // 现在
+```
+
+新增三个函数：
+
+| 函数 | 职责 |
+|------|------|
+| `imgAssertPublicHost()` | 从原第 2 层抽出，DNS 解析后逐 IP 校验 |
+| `imgAssertWhitelistHost()` | 从原白名单内联块抽出 |
+| `imgCheckRedirectTarget()` | 解析 `Location` → 绝对化 → 协议 + 白名单 + 内网**三重复检** |
+| `imgAbsolutizeUrl()` | 相对 Location 绝对化（RFC 7231 允许相对重定向） |
+
+**为什么不用「直接关掉跟随」**：不少图床用 302 换 CDN 域名，
+一刀切会把正常源的图也弄挂 —— 那是用可用性换安全，不该由我们单方面决定。
+现在**跳转照常跟随，只是每一跳都要过校验**。
+
+重定向上限仍是 3 跳，超过即报错（防循环）。
+
+### 修复：SVG 落盘构成存储型 XSS 面
+
+链路逐环成立：`img.php` 只拦「Content-Type 不以 `image/` 开头」，
+而 **SVG 恰好是 `image/*`** → `imgCacheExt()` 把 `image/svg+xml` 映射成 `.svg`
+→ 落盘到 `static/imgcache/<sha1>.svg`，**在 Web 根内、Apache 直接可访问**
+→ 全链路**无任何内容消毒** → SVG 内可含 `<script>`，浏览器**以同源身份执行**。
+
+**修法**：从落盘白名单里移除 `svg`（`imgCacheExts()` 与 `imgCacheExt()` 两处）。
+
+- **不影响 SVG 显示**：`img.php` 仍会**实时返回** SVG 字节（它自己不落盘），
+  只是不再缓存到磁盘。影视站封面本就极少是 SVG。
+- **保留反查映射**：`imgCacheMimeForPath()` 仍认识 `.svg` ——
+  1.3.4 之前可能已落过 `.svg`，反查表要认识它，
+  否则会 fallback 成 `image/jpeg` 让浏览器拿到错误 MIME。**只影响读取，不影响能否落盘。**
+
+### 修复：会话 Cookie 无任何安全属性
+
+`session_start()` 前未设任何 cookie 参数，三项全缺：
+
+| 属性 | 修复前 | 后果 |
+|------|--------|------|
+| `HttpOnly` | ❌ | JS 可读会话 ID → 与上面的 SVG XSS 组合即可**完整接管会话** |
+| `SameSite` | ❌ | 依赖 PHP 默认（`""`），不阻止跨站发送 → CSRF 令牌校验少一层纵深 |
+| `Secure` | ❌ | HTTP 访问时 Cookie 明文传输 |
+
+**修法**：`session_set_cookie_params()` 置于 `session_start()` **之前**（之后设置无效）。
+
+> ⚠ **`secure` 绝不写死 `true`**：本项目大量部署在纯 HTTP 的免费主机上，
+> 写死会导致 Cookie 发不出去、**登录完全失效**，
+> 表现为「密码对但进不去」，属最难查的一类故障。
+> 改由 `vhIsHttpsRequest()` 动态判断，覆盖三种情况：
+> `$_SERVER['HTTPS']`（含 `'off'` 的置法）、`SERVER_PORT === 443`、
+> 以及反向代理的 `X-Forwarded-Proto`（免费主机前置 openresty 很常见）。
+
+### 加固：静态图片补 `X-Content-Type-Options: nosniff`
+
+`img.php` 一直在发 nosniff，但**静态直出**的那批
+（imgcache 命中后的 `c/` 与 `static/` 副本）没有。
+`.htaccess` 的图片 `FilesMatch` 补上（顺带把 `avif`/`bmp` 补进匹配范围）。
+
+> 该指令属 `FileInfo` 类，**不引入新的 `AllowOverride` 权限要求**，
+> 已由 `tests/test_security.php` 断言锁住。
+
+### 修复：`normalizeRemarks()` 不接受 null 的隐式契约
+
+签名 `string $raw` → **`?string $raw`**，`decodeEntities()` 调用补 `(string)` 兜底。
+
+三处调用点此前全靠 `(string) ($detail['vod_remarks'] ?? '')` 强转 ——
+**任何一处漏了就是整站 500**（`TypeError` 是致命错误，不是警告）。
+属于「必须由每个调用方记得强转」的隐式契约，现在由类型系统兜住。
+
+### 新增：安全回归测试（24 项断言）
+
+`tests/test_security.php`，三条修复各自配一组「结构 + 行为」断言：
+
+- **结构类** —— 确认关键配置与调用点还在（`FOLLOWLOCATION => false`、
+  每跳调复检、重定向上限、cookie 参数在 `session_start()` 之前…）；
+- **行为类** —— 把 `imgAssertPublicHost()` 的判定逻辑复算一遍，
+  实测内网/保留地址（含 `169.254.169.254` 云元数据）全部拦下、公网正常放行。
+
+**注入验证**（改回去应当变红）：
+
+| 注入 | 结果 |
+|------|------|
+| `FOLLOWLOCATION` 改回 `true` | ✗ 如期变红 |
+| `svg` 加回落盘白名单 | ✗ 如期变红 |
+| `secure` 写死 `true` | ✗ 如期变红 |
+
+> 写这批测试时踩了一次**和之前同样的坑**：正则匹配到了
+> **修复说明注释里**的 `CURLOPT_FOLLOWLOCATION => true` 字样，
+> 得出「漏洞还在」的错误结论。已抽成公共助手 `t_code()`（先剥注释再读），
+> 避免同一个错误再犯第三次。
+
+### 测试：本阶段的另外两件事
+
+- **152 项测试支持网页端** —— 此前浏览器访问 `tests/run.php` 只看到
+  一串 ANSI 转义码的裸字节。现在按 SAPI 分流：终端保留彩色，
+  网页输出完整 HTML 报告（统计卡片、失败详情置顶、按文件分组、深浅色自适应）。
+- **测试改为全程同进程执行** —— 原先给每个测试文件开子进程，
+  但免费主机常把 `exec()` 与 `proc_open` 都禁用，
+  网页版只能显示「无法创建独立进程」——**对用户毫无意义**。
+  改为同进程 include 后，三种主机环境实测均为 152 项全绿。
+  顺带修掉一个 Web 端致命错误：`STDOUT` 常量只在 CLI 下存在，
+  浏览器访问时直接 `Fatal error`（这个 bug 命令行下测不出来）。
+
+### 无数据库变更
+
+`schema_version` 仍为 **5**。
+
+## [1.3.3] - 2026-10-01
+
+### 新增：零依赖行为测试（152 项断言，进 CI）
+
+此前 CI 只验**结构**（`php -l` 语法、运行期数据没混进来、模板文件齐全），
+**没有一条验行为**。而 CHANGELOG 里那三起线上事故 ——
+
+- 漏传 `config.php` 打死整站前台；
+- `requireAdmin()` 导致后台每次加载灌 20 行 Warning；
+- 未知 `action` 从优雅提示变成 **500 白屏**——
+
+**三条全部是本可用一个十几行测试拦住的。** 本次补上这一层。
+
+**为什么不用 PHPUnit / Pest**：本项目零 Composer、零 `vendor/`，
+且明确要部署到「不懂技术的免费主机用户」手里。引入 PHPUnit 就等于给
+**每个部署实例**凭空加一个 `vendor/` 目录，与零依赖战略直接冲突。
+所以测试也必须零依赖 —— **一个 `php` 直接能跑的脚本**。
+
+**覆盖范围**（4 个文件，`php tests/run.php` 一条命令跑完，约 300 ms）：
+
+| 文件 | 项数 | 覆盖 |
+|------|-----:|------|
+| `tests/test_fields.php` | 79 | `decodeEntities` / `plainText` / `splitList` / `parsePubdate` / `scoreOf` / `badgeOf` / `episodes` / `timeAgo` / `parseDuration` / `formatDuration` / `formatNumber` / `parsePlayUrl` / `playFromList` / `cleanTitle` / `doubanUrl` / `normalizeRegions` / `normalizeLangs` / `normalizeRemarks` / `searchHaystack` |
+| `tests/test_enrich.php` | 30 | `enrichInterpret()` **四态**：代码命中 / 模型命中 / 置信度回退原始值 / 缺答案；`enrichChoiceLabel()` 的 0.7 门槛边界与 `other` 处理；成人内容判定的 `>= 0.7` 边界与「缺数据绝不误报」 |
+| `tests/test_buildmeta.php` | 31 | `buildMeta()` 组合行为：简介择优、演员顿号连接、类型回退、状态三来源，以及 **enrich 缺席时本层必须独立可用** 这条设计契约 |
+| `tests/test_admin_actions.php` | 12 | `$_ADMIN_ACTION_MAP` 结构完整、**表单里的每个 action 都已注册**、函数名反推规则一致，以及那次 500 白屏事故的**直接回归防护** |
+
+**几条被测试锁死的关键契约**：
+
+- `normalizeRegions()` / `normalizeLangs()` 的 **`null` 与 `''` 语义完全不同**：
+  `''` = 没数据不展示，`null` = 看不懂请模型判断。混淆这两者会让某类影片的
+  地区/语言**集体消失**且不报错。
+- `enrichChoiceLabel()` 在 `confidence === 0.7`（恰好等于门槛）时**采用**，
+  只有 `< 0.7` 才回退 —— 边界写死，防止有人改成 `<=`。
+- **`is_adult` 缺答案时 `adult = 0` 且不提示** —— 模型缺席绝不能误标成人内容。
+- `playFromList('蓝光$$1080P')` 与 `parsePlayUrl('蓝光$$https://…')`
+  仍正确剥离连续 `$` —— 这是 1.3.3 专门修过的上游脏数据，改代码时别改回去。
+- `adminHandlePost()` 函数体内**必须有 `global $_ADMIN_ACTION_MAP;`**
+  （测试会剥掉注释后再找，避免「注释掉 global 也能匹配上」的假通过）。
+
+**测试自身的隔离**：只测**纯函数**（无 I/O、无网络、无全局状态），
+不建库、不出站；`VODHUB_DATA_DIR` 仍指向临时目录并注册了清理，
+万一某个被测函数不慎触发 `db()` 也只会在临时目录里建库，**绝不污染站点的 `runtime/`**。
+实测跑完 `runtime/` 未被创建、临时目录无残留。
+
+**验证**：注入回归测试（把 `global $_ADMIN_ACTION_MAP;` 注释掉）
+→ 测试如期变红；还原后恢复全绿。
+
+### 新增：测试报告支持网页端（此前只能在终端看）
+
+浏览器打开 `tests/run.php` 时，原来看到的是一串
+`^[[32mM-bM-^\M-^S^[[0m` 这样的裸字节 —— 那是终端 ANSI 转义码，
+**既没有颜色也没有结构**，152 行糊成一片，根本没法读。
+
+现在按 SAPI 分流，**同一份数据两种呈现**：
+
+| 环境 | 输出 |
+|------|------|
+| 命令行 | 保留 ANSI 颜色与紧凑排版（观感不变） |
+| 网页 | 完整 HTML 报告：统计卡片、**失败详情置顶**、按文件分组、深浅色自适应 |
+
+新增 `tests/report.php` 承载渲染逻辑，**刻意不引外部 CSS** ——
+测试要在任何主机上独立可读，不能依赖站点样式表是否被正确传上来
+（站点出问题时，正是最需要看报告的时候）。配色变量与
+`static/style.css` 的 `:root` 同名，视觉上与后台统一。
+
+单文件可直接访问（`tests/test_enrich.php`），
+`run.php?字段名` 可只跑指定文件（与命令行参数同名）。
+
+### 修复：测试改用同进程执行（此前在多数免费主机上完全跑不出来）
+
+上一版为「每个测试文件开独立进程」做了 `exec` → `proc_open` 的回退链。
+实测发现**这条路在本项目的目标用户群上根本不成立**：
+免费虚拟主机常把这两个函数**都**列入 `disable_functions`，
+于是网页版只能显示"⚠ 无法创建独立进程，本次不执行"——**对用户毫无意义**。
+
+现在改为**全程同进程 include**，任何主机上都能出报告：
+
+| 主机环境 | 网页 | 命令行 |
+|---------|------|--------|
+| 都可用 | ✅ 152 项 | ✅ 152 项 |
+| 只禁 `exec` | ✅ 152 项 | ✅ 152 项 |
+| **两个都禁（多数免费主机）** | ✅ **152 项** | ✅ **152 项** |
+
+曾担心「同进程会让被包含文件的顶层全局赋值丢失」
+（`admin-actions.php` 的 `$_ADMIN_ACTION_MAP`）。**实测不会** ——
+`include` 在全局作用域执行时，顶层赋值就是全局的。两条必须遵守：
+
+| # | 坑 | 做法 |
+|---|---|---|
+| ① | `require_once` 只在首次生效 | 用 `include` |
+| ② | `include` 写在函数体内会丢全局 | include 必须在 run.php **顶层** |
+
+顺带修掉一个 Web 端致命错误：`vhTestColorOn()` 里用了 `STDOUT` 常量，
+而**该常量只在 CLI SAPI 下存在** —— 浏览器访问时直接
+`Fatal error: Undefined constant "STDOUT"`，页面 0 字节。
+这个 bug 在 CLI 下测不出来，是用 `php -d disable_functions=... -S`
+起服务器模拟主机环境才暴露的。
+
+### 测试过程中发现的一处契约脆弱（暂未修）
+
+`normalizeRemarks(string $raw)` 的签名**不接受 `null`**，而
+`includes/enrich.php` 与 `buildMeta()` 两处调用方都是靠
+`(string) ($detail['vod_remarks'] ?? '')` 强转兜住的。
+**当前线上不会炸**，但这个「必须由每个调用方记得强转」的隐式契约本身是脆的：
+任何一处漏了 `(string)` 就是整站 500。
+
+已在 `tests/test_fields.php` 里如实记录当前行为并标注，
+**待第二阶段与 `genre` 的修改一并处理**（把签名改成 `?string` 即可，一行）。
+
+### 新增：CI 增加「行为测试」步骤
+
+`.github/workflows/ci.yml` 的 `lint` 作业在「模板结构完整性」之后
+新增一步 `php tests/run.php`，与 `php -l` 并列。
+**现在 CI 会拦住两类问题**：语法错（原有）与行为回归（本次）。
 
 ### 修复：`.htaccess` 不再触发免费主机的整站 500
 

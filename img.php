@@ -139,11 +139,130 @@ if ((int) ($source['img_proxy'] ?? 0) !== 1) {
     imgFail(403, 'proxy disabled for source ' . $srcId . ' [' . $source['name'] . ']');
 }
 
-$allowed = array_filter(array_map('trim', explode(',', strtolower((string) $source['img_hosts']))));
-
 // 白名单【可选】：留空表示不限制主机（很多人并不知道图片域名是什么）。
-// 即便留空，下面第 2 层的内网/保留地址拦截仍然始终生效，SSRF 仍有兜底。
-if ($allowed) {
+// 即便留空，第 2 层的内网/保留地址拦截仍然始终生效，SSRF 仍有兜底。
+// 校验逻辑在 imgAssertWhitelistHost() 里 —— 重定向每跳也要重跑，故已抽出。
+$allowed = array_filter(array_map('trim', explode(',', strtolower((string) $source['img_hosts']))));
+imgAssertWhitelistHost($host);
+
+/**
+ * 断言目标主机解析后**全部**落在公网地址上。
+ *
+ * ⚠ **为什么要抽成函数、且每跳重定向都要重跑（1.3.4）**：
+ *   原来这段校验只对**原始 URL 的 host** 做一次，随后
+ *   `CURLOPT_FOLLOWLOCATION => true` 让 curl 自动跟随最多 3 次 302。
+ *   **重定向的目标从未被校验** —— 校验的是 A，执行的是 A 后面那个
+ *   attacker 完全可控的 B。于是「白名单内的公网域名 → 302 → 127.0.0.1」
+ *   这条路畅通无阻：三重校验全部通过（它只看过那个公网域名），
+ *   curl 却抓回了内网资源。本地复现实验已证实：内网 canary 命中。
+ *
+ *   修法不是「关掉跟随」（不少图床用 302 换 CDN 域名，关掉等于打断正常源），
+ *   而是**把校验和执行重新绑在一起**：关掉 curl 的自动跟随，
+ *   由本文件自己处理每一跳的 Location，并对新目标**重跑全套校验**。
+ *
+ * @param string $host 已小写的目标主机名或 IP 字面量
+ * @param string $why  失败时写进日志的原因前缀（区分第 2 层与重定向中途）
+ */
+function imgAssertPublicHost(string $host, string $why = ''): void {
+    $tag = $why !== '' ? $why . ' ' : '';
+
+    if (filter_var($host, FILTER_VALIDATE_IP)) {
+        if (!filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+            imgFail(403, $tag . 'private address blocked');
+        }
+        return;
+    }
+
+    // 域名先解析，再校验 IP，防止通过域名解析到内网。
+    // gethostbynamel 也可能被 disable_functions 禁用 —— @ 只能抑制 Warning，
+    // 抑制不了 Error。禁用时无法做 DNS→IP 校验，宁可**拒绝代理**也不能放行，
+    // 否则 SSRF 防护会出现缺口（宁可图片不显示，不可打开内网入口）。
+    if (!function_exists('gethostbynamel')) {
+        imgFail(503, 'resolver disabled on this host');
+    }
+    $ips = @gethostbynamel($host);
+    if (empty($ips)) {
+        imgFail(502, $tag . 'resolve failed');
+    }
+    foreach ($ips as $ip) {
+        if (!filter_var($ip, FILTER_VALIDATE_IP,
+                FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+            imgFail(403, $tag . 'private address blocked after redirect');
+        }
+    }
+}
+
+/**
+ * 解析并校验一个**重定向目标**，返回 [url, host, scheme]。
+ *
+ * 白名单也一起重查：302 把站点带到另一个域，那已经超出了站长授权的
+ * 「图片域名」范围 —— 只查内网地址不够。
+ *
+ * @return array{0:string,1:string,2:string} [绝对URL, 小写host, 小写scheme]
+ */
+function imgCheckRedirectTarget(string $location, string $currentUrl, int $hop): array {
+    // 相对 Location 要按当前 URL 绝对化（RFC 7231 允许相对重定向）
+    $abs = imgAbsolutizeUrl($location, $currentUrl);
+    $p   = parse_url($abs);
+    if ($p === false || empty($p['host']) || empty($p['scheme'])) {
+        imgFail(502, 'redirect hop ' . $hop . ': invalid location');
+    }
+
+    $scheme = strtolower((string) $p['scheme']);
+    if (!in_array($scheme, ['http', 'https'], true)) {
+        imgFail(403, 'redirect hop ' . $hop . ': scheme not allowed (' . $scheme . ')');
+    }
+
+    $host = strtolower((string) $p['host']);
+    imgAssertWhitelistHost($host, 'redirect hop ' . $hop . ': ');
+    imgAssertPublicHost($host, 'redirect hop ' . $hop . ': ');
+
+    return [$abs, $host, $scheme];
+}
+
+/** 把可能是相对路径的 Location 绝对化 */
+function imgAbsolutizeUrl(string $location, string $base): string {
+    $location = trim($location);
+    if ($location === '') {
+        imgFail(502, 'empty location');
+    }
+    // 已经是绝对 URL
+    if (preg_match('#^[a-z][a-z0-9+.-]*://#i', $location)) {
+        return $location;
+    }
+    $b = parse_url($base);
+    if ($b === false || empty($b['scheme']) || empty($b['host'])) {
+        imgFail(502, 'cannot resolve relative location');
+    }
+    $scheme = strtolower((string) $b['scheme']);
+    $host   = (string) $b['host'];
+    $port   = isset($b['port']) ? ':' . (int) $b['port'] : '';
+    $root   = $scheme . '://' . $host . $port . '/';
+
+    if (str_starts_with($location, '//')) {
+        return $scheme . ':' . $location;
+    }
+    if (str_starts_with($location, '/')) {
+        return $root . ltrim($location, '/');
+    }
+    $dir = rtrim(dirname((string) ($b['path'] ?? '/')), '/');
+    return $root . ltrim($dir . '/' . $location, '/');
+}
+
+/**
+ * 白名单校验（抽成函数，供原始请求与每跳重定向共用）。
+ *
+ * 白名单**可选**：留空 = 不限制主机（很多人并不知道图片域名是什么）。
+ * 即便留空，内网/保留地址那层也始终生效，SSRF 仍有兜底。
+ */
+function imgAssertWhitelistHost(string $host, string $why = ''): void {
+    global $source, $allowed;
+
+    // 「留空 = 不限制主机」是项目的有意设计，不在此处报错
+    if (!$allowed) {
+        return;
+    }
+    $tag    = $why !== '' ? $why : '';
     $hostOk = false;
     foreach ($allowed as $pattern) {
         $pattern = trim($pattern, '. ');
@@ -156,7 +275,7 @@ if ($allowed) {
         }
     }
     if (!$hostOk) {
-        imgFail(403, 'host not allowed');
+        imgFail(403, $tag . 'host not allowed (' . $host . ')');
     }
 }
 
@@ -179,64 +298,91 @@ if ($localFile !== '' && is_file($localFile)) {
 }
 
 // --- 2. 内网 / 保留地址拦截（白名单被误配的兜底） ---
-if (filter_var($host, FILTER_VALIDATE_IP)) {
-    if (!filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
-        imgFail(403, 'private address blocked');
-    }
-} else {
-    // 域名先解析，再校验 IP，防止通过域名解析到内网
-    // gethostbynamel 也可能被 disable_functions 禁用 —— @ 只能抑制 Warning，
-    // 抑制不了 Error。禁用时无法做 DNS→IP 校验，宁可**拒绝代理**也不能放行，
-    // 否则 SSRF 防护会出现缺口（宁可图片不显示，不可打开内网入口）。
-    if (!function_exists('gethostbynamel')) {
-        imgFail(503, 'resolver disabled on this host');
-    }
-    $ips = @gethostbynamel($host);
-    if (empty($ips)) {
-        imgFail(502, 'resolve failed');
-    }
-    foreach ($ips as $ip) {
-        if (!filter_var($ip, FILTER_VALIDATE_IP,
-                FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
-            imgFail(403, 'private address blocked');
+// ⚠ 1.3.4：这段已抽成 imgAssertPublicHost()，**每跳重定向都要重跑一次**。
+//   原因见该函数说明 —— 校验与执行之间隔着 attacker 可控的 302。
+imgAssertPublicHost($host);
+
+// --- 2.5 重定向上限 ---
+const IMG_MAX_REDIRS = 3;
+
+// --- 3. 拉取图片（含**手动**重定向跟随） ---
+//
+// ⚠ 1.3.4 安全修复：`CURLOPT_FOLLOWLOCATION` 改为 false，改由本文件自己跟随。
+//   原因：curl 自动跟随时**重定向目标不经过上面那三重校验**，
+//   于是「白名单内的公网域名 → 302 → 内网地址」这条路畅通无阻，
+//   内网资源会被原样抓回来（本地复现实验已证实）。
+//   关掉自动跟随后，每一跳的 Location 都要过 imgCheckRedirectTarget()：
+//   协议 → 白名单 → DNS 解析后逐 IP 校验，三样全过才继续。
+//
+//   为什么不用「直接关掉跟随」：不少图床用 302 换 CDN 域名，
+//   一刀切会把正常源的图也弄挂 —— 那是用可用性换安全，不该由我们单方面决定。
+$referer = $scheme . '://' . $host . '/';
+
+$fetchUrl  = $src;
+$fetchHost = $host;
+$body      = false;
+$code      = 0;
+$type      = '';
+$remaining = IMG_MAX_REDIRS;
+
+do {
+    $referer = $fetchUrl === $src ? ($scheme . '://' . $host . '/')
+                                 : (parse_url($fetchUrl, PHP_URL_SCHEME) . '://'
+                                    . (parse_url($fetchUrl, PHP_URL_HOST) ?: $fetchHost) . '/');
+
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL            => $fetchUrl,
+        CURLOPT_RETURNTRANSFER => true,
+        // 支柱四：12 s → 4 s。图片请求是全站最高频的，慢 8 秒换不到任何好处，
+        // 只会白占 EP 槽位（EP 是并发计数，槽位被占越久越容易触顶）。
+        CURLOPT_TIMEOUT        => 4,
+        CURLOPT_CONNECTTIMEOUT => 3,
+        // ★ 不让 curl 自动跟随：跟随逻辑在上面，逐跳校验过才继续
+        CURLOPT_FOLLOWLOCATION => false,
+        CURLOPT_HEADER         => false,
+        CURLOPT_SSL_VERIFYPEER => false,
+        CURLOPT_SSL_VERIFYHOST => false,
+        CURLOPT_USERAGENT      => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+            . 'Chrome/120 Safari/537.36 ImageProxy/1.0',
+        CURLOPT_REFERER        => $referer,
+    ]);
+    // 关键：目标站若按 Referer 校验，这里带上同域 Referer 通常可过
+    curl_setopt($ch, CURLOPT_HTTPHEADER, [
+        'Referer: ' . $referer,
+        'Accept: image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+    ]);
+
+    $respBody   = curl_exec($ch);
+    $code       = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $type       = (string) curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
+    $redirectTo = (string) curl_getinfo($ch, CURLINFO_REDIRECT_URL);
+    curl_close($ch);
+
+    if ($code >= 300 && $code < 400 && $redirectTo !== '') {
+        if ($remaining <= 0) {
+            imgFail(502, 'too many redirects (>' . IMG_MAX_REDIRS . ')');
         }
+        $remaining--;
+        // ★ 这一行是本次修复的核心：新目标过完三重校验才继续
+        [$fetchUrl, $fetchHost] = imgCheckRedirectTarget($redirectTo, $fetchUrl, IMG_MAX_REDIRS - $remaining);
+        $body = false;      // 还没拿到图，继续循环
+        $code = 0;
+        continue;
     }
-}
 
-// --- 3. 拉取图片 ---
-$referer = '';
-if (!empty($parts['host'])) {
-    $referer = $scheme . '://' . $parts['host'] . '/';
-}
+    $body = $respBody;
+    break;
+} while (true);
 
-$ch = curl_init();
-curl_setopt_array($ch, [
-    CURLOPT_URL            => $src,
-    CURLOPT_RETURNTRANSFER => true,
-    // 支柱四：12 s → 4 s。图片请求是全站最高频的，慢 8 秒换不到任何好处，
-    // 只会白占 EP 槽位（EP 是并发计数，槽位被占越久越容易触顶）。
-    CURLOPT_TIMEOUT        => 4,
-    CURLOPT_CONNECTTIMEOUT => 3,
-    CURLOPT_FOLLOWLOCATION => true,
-    CURLOPT_MAXREDIRS      => 3,
-    CURLOPT_SSL_VERIFYPEER => false,
-    CURLOPT_SSL_VERIFYHOST => false,
-    CURLOPT_USERAGENT      => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-        . 'Chrome/120 Safari/537.36 ImageProxy/1.0',
-    CURLOPT_REFERER        => $referer,
-]);
-// 关键：目标站若按 Referer 校验，这里带上同域 Referer 通常可过
-curl_setopt($ch, CURLOPT_HTTPHEADER, [
-    'Referer: ' . $referer,
-    'Accept: image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-]);
-$body = curl_exec($ch);
-$code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-$type = (string) curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
-curl_close($ch);
+// 重定向链走完后，落盘与「自动学习」用**最终**那个 host ——
+// 中途跳过的域名才是图床真正在用的（原始 URL 往往只是 CDN 的入口）
+if ($fetchUrl !== $src) {
+    $host = $fetchHost;
+}
 
 if ($body === false || $code !== 200 || $body === '') {
-    imgFail(502, 'fetch failed');
+    imgFail(502, 'fetch failed' . ($code ? ' (http ' . $code . ')' : ''));
 }
 
 // 只放行图片类响应，避免被当成内容入口

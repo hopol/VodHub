@@ -290,9 +290,16 @@ function normalizeLangs(string $raw): ?string {
  *
  * 实测 `vod_remarks` 有 66 种取值，但句式规整：
  * 「已完结」「更新至20260926期」「更新至第08集」能直接判；「HD」「HD中字」判不了，交模型。
+ *
+ * ⚠ 参数声明为 **?string 而不是 string**（1.3.4 起）：
+ *   `vod_remarks` 缺失时 `?? ''` 给的是空串，但上游偶尔直接给 null ——
+ *   而签名只收 string 时，**任何一处调用方忘了 (string) 强转就是整站 500**
+ *   （TypeError 是致命错误，不是警告）。
+ *   此前三处调用点全靠 `(string) (...)` 强转兜着，属于「必须由每个调用方
+ *   记得强转」的隐式契约；现在由类型系统兜住，调用方也一并简化。
  */
-function normalizeRemarks(string $raw): ?string {
-    $s = trim(decodeEntities($raw));
+function normalizeRemarks(?string $raw): ?string {
+    $s = trim(decodeEntities((string) $raw));
     if ($s === '') {
         return null;
     }
@@ -357,7 +364,7 @@ function buildMeta(array $detail, int $sourceId, array $types = [], ?array $enri
 
     $status = trim((string) ($enrich['update_status_text'] ?? ''));
     if ($status === '') {
-        $code = normalizeRemarks((string) ($detail['vod_remarks'] ?? ''));
+        $code = normalizeRemarks($detail['vod_remarks'] ?? null);
         $status = match ($code) {
             'finished' => '已完结',
             'ongoing'  => '连载中',

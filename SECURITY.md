@@ -121,3 +121,53 @@ VodHub 本身**不存储、不缓存视频文件**，只聚合你自行配置的
 ---
 
 感谢你帮助保护 VodHub 的使用者 🙏
+
+## 1.3.4 修复的三处缺陷（供安全审计参考）
+
+以下三处均为**代码级审计发现**（2026-10-03），其中 SSRF 绕过已通过本地复现实验证实可利用。
+记录在此便于外部审计对照。
+
+### 1. 图片代理 SSRF 绕过（重定向目标从不复检）
+
+`img.php` 对原始 URL 的 host 做了三重校验（协议 / 白名单 / 内网地址，
+第三层含 DNS 解析后逐 IP 校验），但 `CURLOPT_FOLLOWLOCATION => true`
+让 curl 自动跟随最多 3 次 302，**而重定向的目标从未被重新校验** ——
+校验的是 A，执行的是 A 后面那个攻击者可控的 B。
+
+`img.php` 是无需登录的公开接口，且图片白名单留空即不限制主机，
+故默认攻击面为全网；免费主机通常与数据库、面板同机。
+
+**修法**：`FOLLOWLOCATION => false`，改由 `img.php` 自己跟随，
+每跳的 `Location` 经 `imgCheckRedirectTarget()` 重跑协议 + 白名单 + 内网三重校验。
+新增 `imgAssertPublicHost()` / `imgAssertWhitelistHost()` /
+`imgCheckRedirectTarget()` / `imgAbsolutizeUrl()` 四个函数。
+
+**回归测试**：`tests/test_security.php`。
+
+### 2. SVG 落盘构成存储型 XSS 面
+
+`image/svg+xml` 属于 `image/*`，能通过 `img.php` 的「只放行图片类响应」；
+随后被映射为 `.svg` 落盘到 `static/imgcache/<sha1>.svg`
+（**在 Web 根内、Apache 直接可访问**），而全链路**无任何内容消毒**。
+SVG 内可含 `<script>`，浏览器以同源身份执行。
+
+**修法**：从 `imgCacheExts()` / `imgCacheExt()` 移除 `svg`。
+SVG 仍可经 `img.php` 实时返回，只是不落盘。
+`imgCacheMimeForPath()` 保留 `.svg` 反查（历史遗留文件仍需正确 MIME）。
+
+### 3. 会话 Cookie 无 HttpOnly / SameSite / Secure
+
+`session_start()` 前未设任何 cookie 参数。`HttpOnly` 缺失使上述 XSS
+可直接窃取会话 ID；`SameSite` 缺失使 CSRF 令牌校验少一层纵深。
+
+**修法**：`session_set_cookie_params()` 置于 `session_start()` 之前。
+`secure` 由 `vhIsHttpsRequest()` 动态判断 —— **不得写死 `true`**，
+否则纯 HTTP 的免费主机将登录完全失效。
+
+### 仍未处理的相关项
+
+- `includes/client.php` 的上游请求也开着 `FOLLOWLOCATION`。
+  但它请求的是**管理员自己配置的数据源**（威胁模型不同），风险等级低一档，本次未改。
+- **三处 `CURLOPT_SSL_VERIFYPEER => false`**（`img.php` / `includes/enrich.php` /
+  `includes/client.php`）尚未改为可配置。这是**已知待办项**，
+  与本次 SSRF 修复叠加时会放大风险，建议下一版处理。
