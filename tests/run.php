@@ -108,19 +108,39 @@ foreach ($files as $file) {
 
 $elapsed = round((microtime(true) - $started) * 1000, 1);
 
+/** 统计总项数与失败项数（用于汇总行） */
+$suiteTotal = 0;
+$suiteFails = 0;
+foreach ($results as $r) {
+    foreach ($r['cases'] as $c) {
+        $suiteTotal++;
+        if (empty($c['ok'])) {
+            $suiteFails++;
+        }
+    }
+}
+
 // ---- CLI：各文件自己的彩色输出 + 末尾汇总 ----
 if ($isCli) {
     foreach ($results as $name => $r) {
         echo "\n\033[1m── {$name} \033[0m\n" . $r['text'] . "\n";
     }
     echo "\n" . str_repeat('─', 60) . "\n";
-    if ($failed === []) {
-        echo "\033[32m✅ 全部通过：" . count($files) . " 个测试文件，{$elapsed} ms\033[0m\n";
+    // ⚠ 汇总必须**同时给出总项数与失败项数**。
+    //   1.3.7 之前这里只按「文件是否失败」输出「全部通过」，
+    //   于是「195 个✓ + 1 个✗」也会显示「全部通过」——
+    //   我据此误判「全绿」，漏掉了那个失败项整整一轮。
+    if ($suiteFails === 0) {
+        echo "\033[32m✅ 全部通过：" . count($files) . " 个测试文件，"
+           . "{$suiteTotal} 项断言，{$elapsed} ms\033[0m\n";
     } else {
-        echo "\033[31m❌ 失败文件：" . implode(', ', $failed)
-           . "（共 " . count($files) . " 个，{$elapsed} ms）\033[0m\n";
+        echo "\033[31m❌ {$suiteFails} / {$suiteTotal} 项失败"
+           . "（" . count($files) . " 个测试文件，{$elapsed} ms）\033[0m\n";
+        if ($failed !== []) {
+            echo "\033[31m   涉及文件：" . implode(', ', $failed) . "\033[0m\n";
+        }
     }
-    exit($failed === [] ? 0 : 1);
+    exit($suiteFails === 0 ? 0 : 1);
 }
 
 // ---- 网页：汇总成一份 HTML ----

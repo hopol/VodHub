@@ -481,19 +481,39 @@ t('【关键】getenv 被禁用时不致命（实测它会抛 Error 而非返回
     $fake = vhGetEnv('__VH_TEST_NOT_EXIST__');
     ok($fake === false || is_string($fake), 'vhGetEnv 应安全返回');
 
-    // 全站不得有裸 getenv 调用
+    // 全站不得有裸调 getenv()。
+    //
+    // ⚠ 判据要**排除 vhGetEnv 的实现本身**：
+    //   `return function_exists('getenv') ? getenv($name) : false;`
+    //   这一行是包装函数的内部实现，是**唯一允许出现裸 getenv 的地方**。
+    //   1.3.7 首次发布时这条测试误报 config.php 就是因为没排除它 ——
+    //   而当时只看了「✓ 的数量」，把失败项漏掉了。
+    //
+    //   做法：先把 vhGetEnv 的函数体整段挖掉，再检查剩下的部分。
     $root = dirname(__DIR__);
     $bare = [];
     foreach (['config.php', 'includes/guard.php', 'includes/pagecache.php',
               'includes/enrich.php', 'includes/client.php', 'img.php'] as $f) {
         $src = (string) @file_get_contents($root . '/' . $f);
-        // 去掉注释与字符串字面量里的内容，只看真实调用
-        $src = (string) preg_replace(['#//[^\n]*#', '#/\*.*?\*/#s', '#"[^"]*"#', "#'[^']*'#"], '', $src);
+
+        // ① 挖掉 vhGetEnv 的整个函数体（含它前面的 if 包装）
+        $src = (string) preg_replace(
+            "/if\s*\(\s*!function_exists\(\s*'vhGetEnv'\s*\)\s*\)\s*\{.*?\n\}/s",
+            '', $src
+        );
+
+        // ② 去掉注释与字符串字面量，只看真实调用
+        $src = (string) preg_replace(
+            ['#//[^\n]*#', '#/\*.*?\*/#s', '#"[^"]*"#', "#'[^']*'#"],
+            '', $src
+        );
+
         if (preg_match('/(?<![A-Za-z_])getenv\s*\(/', $src)) {
             $bare[] = $f;
         }
     }
-    eq([], $bare, '这些文件仍在裸调 getenv() —— getenv 被禁用时会致命错误');
+    eq([], $bare, '这些文件仍在裸调 getenv() —— getenv 被禁用时会致命错误。'
+                . '（vhGetEnv 的实现本身不算，那是唯一允许出现的地方）');
 });
 
 t('【关键】降级状态可见（后台能看出没在校验）', static function (): void {
