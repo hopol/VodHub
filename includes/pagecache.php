@@ -147,7 +147,7 @@ function pcBuckets(): array {
     //    `.htaccess` 开头那条 RewriteRule 把 %{TIME_YEAR}%{TIME_MON}%{TIME_DAY}-%{TIME_HOUR}
     //    写进 VH_BUCKET，这里照抄 —— 「按哪个钟找」和「按哪个钟写」从此同源，
     //    不存在猜错。没有这个环境变量（.htaccess 没生效 / Nginx）就退回上面三个候选。
-    foreach ([(string) ($_SERVER['VH_BUCKET'] ?? ''), (string) (getenv('VH_BUCKET') ?: '')] as $b) {
+    foreach ([(string) ($_SERVER['VH_BUCKET'] ?? ''), (string) (vhGetEnv('VH_BUCKET') ?: '')] as $b) {
         $b = trim($b);
         if ($b !== '' && preg_match('/^\d{8}-\d{1,2}$/', $b)) {
             $names[$b] = true;

@@ -20,7 +20,14 @@ $__vhTestTmp = sys_get_temp_dir() . '/vodhub-test-' . getmypid();
 if (!is_dir($__vhTestTmp)) {
     @mkdir($__vhTestTmp, 0755, true);
 }
-putenv('VODHUB_DATA_DIR=' . $__vhTestTmp);
+// ⚠ putenv 也可能在 disable_functions 里，而被移除的函数是**致命错误**不是返回 false。
+//   测试工具应该比它测试的代码更耐用，所以这里做存在性判断；
+//   万一不可用，退回用「站点根外的兄弟目录」，同样不会污染仓库里的 runtime/。
+if (function_exists('putenv')) {
+    putenv('VODHUB_DATA_DIR=' . $__vhTestTmp);
+} else {
+    define('VODHUB_DATA_DIR', $__vhTestTmp);
+}
 define('VODHUB_TEST_TMP', $__vhTestTmp);
 
 register_shutdown_function(static function () use ($__vhTestTmp): void {
@@ -205,7 +212,7 @@ function runAll(): int {
     }
 
     // 仍保留文件通道：万一将来又用回子进程，这条路不用重写。
-    $jsonPath = (string) getenv('VHTEST_JSON');
+    $jsonPath = (string) vhGetEnv('VHTEST_JSON');
     if ($jsonPath !== '') {
         @file_put_contents($jsonPath, json_encode([
             'suite' => $title,

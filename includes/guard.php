@@ -45,7 +45,7 @@ if (!defined('IMG_CACHE_DIR')) {
 //   ③ 这里（运行时）→ 不依赖任何主机配置，只要 guard.php 被加载就生效
 // config.php 里那句 ini_set('display_errors','1') 是给本地排障留的，**故意不改它** ——
 // 这里在其之后把它关掉即可。需要排障时设环境变量 VODHUB_DEBUG=1 重新打开。
-if (getenv('VODHUB_DEBUG') !== '1') {
+if (vhGetEnv('VODHUB_DEBUG') !== '1') {
     @ini_set('display_errors', '0');
     @ini_set('display_startup_errors', '0');
     @ini_set('log_errors', '1');

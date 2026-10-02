@@ -25,11 +25,13 @@ function vhTestIsCli(): bool {
 
 /** 终端是否支持颜色（NO_COLOR 是社区通用约定） */
 function vhTestColorOn(): bool {
-    if (getenv('NO_COLOR') !== false) {
+    // ⚠ 用 vhGetEnv 而非 getenv：实测 getenv 被列入 disable_functions 时
+    //   PHP 8 抛**致命错误**（不是返回 false），会让整个测试报告挂掉。
+    if (vhGetEnv('NO_COLOR') !== false) {
         return false;
     }
     if (DIRECTORY_SEPARATOR === '\\') {
-        return getenv('ANSICON') !== false || getenv('WT_SESSION') !== false;
+        return vhGetEnv('ANSICON') !== false || vhGetEnv('WT_SESSION') !== false;
     }
     // ⚠ STDOUT 常量**只在 CLI SAPI 下存在**。Web SAPI（浏览器访问测试报告）
     //   调用到这里会抛「Undefined constant STDOUT」的致命错误 —— 实测踩过。

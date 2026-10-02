@@ -44,11 +44,30 @@ foreach (['curl', 'pdo_sqlite'] as $requiredExt) {
     }
 }
 
+if (!function_exists('vhGetEnv')) {
+    /**
+     * 安全读取环境变量：**该函数被禁用时不抛错**。
+     *
+     * ⚠ 实测：`getenv` 出现在 `disable_functions` 里时，
+     *   PHP 8 直接抛 `Error: Call to undefined function getenv()`
+     *   —— 是**致命错误**，不是返回 false。
+     *   （我曾以为它返回 false，那是错的，实测纠正。）
+     *
+     *   免费主机的 disable_functions 因时而异，不能假设它一定可用。
+     *   本项目多处读环境变量（数据目录、TLS 开关），一处炸就是整站 500。
+     *
+     * @return string|false 同 getenv()，但函数不存在时返回 false
+     */
+    function vhGetEnv(string $name) {
+        return function_exists('getenv') ? getenv($name) : false;
+    }
+}
+
 // 站点名称（显示在页面标题与页头）
 define('APP_NAME', '影视聚合站');
 
 // 版本号（与 CHANGELOG.md 保持一致）
-define('APP_VERSION', '1.3.6');
+define('APP_VERSION', '1.3.7');
 
 // ================================================================
 // 数据目录（安全基线 · 无 .htaccess 也能守住的那一条）
@@ -140,7 +159,7 @@ function vhResolveDataDir(): array {
     //    因为免费主机面板常常没有设置环境变量的入口）：
     //      a) 在本文件下方写：  define('VODHUB_DATA_DIR', '/home/你/vodhub-data');
     //      b) 设环境变量：       VODHUB_DATA_DIR=/home/你/vodhub-data
-    $spec = defined('VODHUB_DATA_DIR') ? (string) VODHUB_DATA_DIR : (string) (getenv('VODHUB_DATA_DIR') ?: '');
+    $spec = defined('VODHUB_DATA_DIR') ? (string) VODHUB_DATA_DIR : (string) (vhGetEnv('VODHUB_DATA_DIR') ?: '');
     if (trim($spec) !== '') {
         $spec = rtrim(trim($spec), '/');
         if ($spec !== '' && vhDirUsable($spec)) {
@@ -271,7 +290,7 @@ if (!function_exists('vhTlsVerifyFromEnv')) {
 }
 
 if (!defined('VODHUB_TLS_VERIFY')) {
-    define('VODHUB_TLS_VERIFY', vhTlsVerifyFromEnv(getenv('VODHUB_TLS_VERIFY')));
+    define('VODHUB_TLS_VERIFY', vhTlsVerifyFromEnv(vhGetEnv('VODHUB_TLS_VERIFY')));
 }
 
 // 降级状态是否对外可见（后台与 vp.php 会提示「当前未校验证书」）

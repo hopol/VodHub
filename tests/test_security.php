@@ -457,11 +457,43 @@ t('【安全】getenv 被禁用时按「未设置」处理（仍校验，不降�
 
 t('降级有环境变量与常量两条显式路径', static function (): void {
     $src = t_code('config.php');
-    ok(str_contains($src, "getenv('VODHUB_TLS_VERIFY')"), '应支持 VODHUB_TLS_VERIFY 环境变量');
+    ok(
+        str_contains($src, "vhGetEnv('VODHUB_TLS_VERIFY')"),
+        '应支持 VODHUB_TLS_VERIFY 环境变量'
+    );
     ok(
         substr_count($src, 'VODHUB_TLS_VERIFY') >= 3,
         '常量与降级说明都应围绕 VODHUB_TLS_VERIFY'
     );
+});
+
+t('【关键】getenv 被禁用时不致命（实测它会抛 Error 而非返回 false）', static function (): void {
+    // ⚠ 我曾以为「getenv 被禁用时返回 false」—— **实测是错的**：
+    //   PHP 8 在 getenv 出现在 disable_functions 里时直接抛
+    //   `Error: Call to undefined function getenv()`，是致命错误。
+    //   免费主机的 disable_functions 因时而异，一处炸就是整站 500。
+    //
+    // 所以全站读环境变量都必须走 vhGetEnv() 包装。
+    require_once __DIR__ . '/../config.php';
+    ok(function_exists('vhGetEnv'), 'config.php 应提供 vhGetEnv() 包装');
+
+    // 包装在被禁用时应返回 false 而非抛错
+    $fake = vhGetEnv('__VH_TEST_NOT_EXIST__');
+    ok($fake === false || is_string($fake), 'vhGetEnv 应安全返回');
+
+    // 全站不得有裸 getenv 调用
+    $root = dirname(__DIR__);
+    $bare = [];
+    foreach (['config.php', 'includes/guard.php', 'includes/pagecache.php',
+              'includes/enrich.php', 'includes/client.php', 'img.php'] as $f) {
+        $src = (string) @file_get_contents($root . '/' . $f);
+        // 去掉注释与字符串字面量里的内容，只看真实调用
+        $src = (string) preg_replace(['#//[^\n]*#', '#/\*.*?\*/#s', '#"[^"]*"#', "#'[^']*'#"], '', $src);
+        if (preg_match('/(?<![A-Za-z_])getenv\s*\(/', $src)) {
+            $bare[] = $f;
+        }
+    }
+    eq([], $bare, '这些文件仍在裸调 getenv() —— getenv 被禁用时会致命错误');
 });
 
 t('【关键】降级状态可见（后台能看出没在校验）', static function (): void {
