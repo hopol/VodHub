@@ -52,9 +52,12 @@
     <FilesMatch "\.(css|js)$">
         Header set Cache-Control "public, max-age=604800"
     </FilesMatch>
-    <!-- 图片加 nosniff（1.3.4）：img.php 自己已经在发了，但**静态直出**的那批
-         （imgcache 命中后的 c/ 与 static/ 下的副本）没有。
-         没有 nosniff 时浏览器会猜 MIME，猜错就可能把图片当 HTML 解析。 -->
+    # 图片加 nosniff（1.3.4）：img.php 自己已经在发了，但**静态直出**的那批
+    # （imgcache 命中后的 c/ 与 static/ 下的副本）没有。
+    # 没有 nosniff 时浏览器会猜 MIME，猜错就可能把图片当 HTML 解析。
+    # ⚠ 这里必须用 # 而非 <!-- -->：Apache 的 .htaccess **只认行首 # 为注释**，
+    #   写成 <!-- --> 会报 `Expected </!--> but saw </IfModule>` 直接 500。
+    #   —— 1.3.4 就是在这一点上翻车过一次（整站 500），别再改回去。
     <FilesMatch "\.(jpg|jpeg|png|gif|svg|webp|avif|bmp|ico|woff|woff2)$">
         Header set Cache-Control "public, max-age=2592000"
         Header set X-Content-Type-Options "nosniff"

@@ -279,6 +279,57 @@ t('path 参数保留（否则子目录部署会拿不到会话）', static funct
 
 group('不得引入新的 AllowOverride 权限要求');
 
+t('【回归·曾翻车】.htaccess 不得含 HTML 注释 <!-- -->', static function (): void {
+    // ⚠⚠ **1.3.4 就在这里翻过车**：给图片 FilesMatch 加 nosniff 时顺手写了
+    //   一段 <!-- --> 说明注释，Apache 直接 500，错误信息是
+    //   `Expected </!--> but saw </IfModule>`。
+    //
+    //   而这个坑 CHANGELOG 早在 1.3.3 就记过：
+    //   「Apache 的 .htaccess **只认行首 # 为注释**，我一度在里面写了 <!-- -->，
+    //     直接 500（Expected </!--> but saw </IfModule>）——
+    //     文件自己的注释里早就警告过这一点。」
+    //
+    //   **同一个文件、同一个坑，两次犯。** 所以锁一条测试。
+    // 判据：**非注释行**里出现 HTML 注释标记才算错。
+    // （.htaccess 里以 # 开头的说明文字提到「<!-- -->」是允许的 ——
+    //   本文件下面那条「说明文字用 #」的注释就故意提到了它。）
+    $bad = [];
+    foreach (explode("\n", (string) @file_get_contents(dirname(__DIR__) . '/.htaccess')) as $i => $line) {
+        $t = ltrim($line);
+        if ($t === '' || str_starts_with($t, '#')) {
+            continue;   // 空行或注释行，放行
+        }
+        if (str_contains($t, '<!--') || str_contains($t, '-->')) {
+            $bad[] = ($i + 1) . ': ' . $t;
+        }
+    }
+    eq([], $bad, 'Apache 的 .htaccess 只认行首 # 为注释；'
+                . '非注释行里出现 HTML 注释会报 `Expected </!--> but saw </IfModule>` 整站 500');
+});
+
+t('.htaccess 的说明文字全部用 # 开头', static function (): void {
+    $ht  = (string) @file_get_contents(dirname(__DIR__) . '/.htaccess');
+    $bad = [];
+    foreach (explode("\n", $ht) as $i => $line) {
+        $t = trim($line);
+        // 只看既不是指令、也不是 # 注释、也不是空行的「纯文字行」——
+        // 那说明有人想在 .htaccess 里写字，那必须以 # 开头
+        if ($t === '' || str_starts_with($t, '#')) {
+            continue;
+        }
+        // 指令 / 标签 / 续行（以 < 或 > 开头的是容器标签闭合）
+        if (str_starts_with($t, '<') || str_starts_with($t, '>')) {
+            continue;
+        }
+        // 指令续行（如 Header set X "long value"）在本文件里都是单行，这里放宽
+        if (preg_match('/^[A-Z][A-Za-z]+(\s|$)/', $t)) {
+            continue;
+        }
+        $bad[] = ($i + 1) . ': ' . $t;
+    }
+    eq([], $bad, '.htaccess 里出现了不以 # 开头的说明文字');
+});
+
 t('.htaccess 仍只含 FileInfo 类指令', static function () use ($root): void {
     $ht  = t_code('.htaccess');
     $bad = [];
