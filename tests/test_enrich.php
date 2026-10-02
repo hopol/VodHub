@@ -134,7 +134,52 @@ t('态二 genre 纯靠模型（代码无法归类开放词表）', static functi
         ['vod_class' => '古装,权谋', 'vod_tag' => '胡歌,改编'],
         ['genre' => ['choice' => 'war', 'confidence' => 0.82]]
     );
-    eq('战争历史', $r['genre_text']);
+    // 1.3.4：war 与 history 已拆开（criteria 要求选项互斥），标签随之拆开
+    eq('战争', $r['genre_text']);
+});
+
+t('【1.3.4】genre 新增 history 标签（criteria 加了就得有标签）', static function (): void {
+    $r = enrichInterpret(
+        ['vod_class' => '历史,年代'],
+        ['genre' => ['choice' => 'history', 'confidence' => 0.9]]
+    );
+    eq('历史', $r['genre_text'], 'history 缺标签会让模型选中它却被丢弃');
+});
+
+t('【1.3.4】genre 低置信度时给出 genre_raw 兜底而非空串', static function (): void {
+    $r = enrichInterpret(
+        ['vod_class' => '古装,权谋,架空', 'vod_tag' => '胡歌'],
+        ['genre' => ['choice' => 'drama', 'confidence' => 0.59]]   // 低置信度
+    );
+    eq('', $r['genre_text'], '判不准就不写归一结果');
+    ok(
+        $r['genre_raw'] !== '',
+        '但必须有 raw 兜底 —— 此前 genre 是四个字段里唯一没兜底的，'
+        . '模型判不准时前台什么都不显示，比显示原始分类更差'
+    );
+    contains($r['genre_raw'], '古装', '兜底应来自原始 vod_class');
+});
+
+t('【1.3.4】genre_raw 取原始分类前两个词', static function (): void {
+    $r = enrichInterpret(
+        ['vod_class' => '剧情,爱情,家庭'],
+        ['genre' => ['choice' => 'other', 'confidence' => 0.99]]
+    );
+    eq('剧情 / 爱情', $r['genre_raw'], '取前两个即可，多了反而挤占版面');
+});
+
+t('【1.3.4】vod_class 为空时 genre_raw 也是空（不渲染占位）', static function (): void {
+    $r = enrichInterpret(['vod_class' => '', 'vod_tag' => 'token汤'], []);
+    eq('', $r['genre_raw'], '没有任何可兜底的原始值时就不显示');
+});
+
+t('【1.3.4】genre 判准时 genre_main 有值、raw 也在（供渲染层选）', static function (): void {
+    $r = enrichInterpret(
+        ['vod_class' => '武侠,古装'],
+        ['genre' => ['choice' => 'drama', 'confidence' => 0.96]]
+    );
+    eq('剧情', $r['genre_text']);
+    ok($r['genre_raw'] !== '', 'raw 同时保留 —— 渲染层据此判断是否有增量');
 });
 
 t('态二 region 与 lang 的中文标签映射正确', static function (): void {

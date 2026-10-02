@@ -341,8 +341,10 @@ do {
         // ★ 不让 curl 自动跟随：跟随逻辑在上面，逐跳校验过才继续
         CURLOPT_FOLLOWLOCATION => false,
         CURLOPT_HEADER         => false,
-        CURLOPT_SSL_VERIFYPEER => false,
-        CURLOPT_SSL_VERIFYHOST => false,
+        // 1.3.4：默认校验证书（此前写死 false，信任链完全敞开）。
+        // 主机 CA 链不完整时可显式降级 —— 见 config.php 的 VODHUB_TLS_VERIFY。
+        CURLOPT_SSL_VERIFYPEER => TLS_VERIFY,
+        CURLOPT_SSL_VERIFYHOST => TLS_VERIFY ? 2 : 0,
         CURLOPT_USERAGENT      => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
             . 'Chrome/120 Safari/537.36 ImageProxy/1.0',
         CURLOPT_REFERER        => $referer,

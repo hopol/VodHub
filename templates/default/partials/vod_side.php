@@ -23,8 +23,29 @@ $ep = episodes(is_array($detail ?? null) ? $detail : [], intval($playCount ?? 0)
 
         <dt>分类</dt><dd><?= h($meta['genres'] ? implode(' / ', $meta['genres']) : ($meta['type_name'] ?: '未知')) ?></dd>
 
-        <?php if ($meta['genre_main'] !== '' && !in_array($meta['genre_main'], $meta['genres'], true)): ?>
-            <dt>主类型</dt><dd><?= h($meta['genre_main']) ?></dd>
+        <?php
+        // 主类型行（1.3.4 改）：
+        // 此前条件是 `genre_main !== '' && !in_array($genre_main, $genres)` ——
+        // 实测两道闸门叠加后，模型辛苦归一出的结果在 8/9 的情况下**什么都不显示**：
+        //   闸门一 confidence ≥ 0.7      → 6/9 通过（criteria 重叠导致分布被摊薄）
+        //   闸门二 不在原始 genres 里      → 6 个里只剩 1 个（归一标签恰好就是 vod_class 原词）
+        //
+        // 现在改成**只展示真正有增量的信息**：
+        //   · 归一结果（genre_main）优先；
+        //   · 模型判不出来时用原始 vod_class 兜底（genre_raw），不再留空；
+        //   · 两者都没有才不渲染 —— 而「有值才渲染」是本项目的既定约定。
+        $genreShow = '';
+        $genreSrc  = '';
+        if ($meta['genre_main'] !== '') {
+            $genreShow = $meta['genre_main'];
+            $genreSrc  = '归一';
+        } elseif (($meta['genre_raw'] ?? '') !== '') {
+            $genreShow = $meta['genre_raw'];
+            $genreSrc  = '原始';
+        }
+        ?>
+        <?php if ($genreShow !== ''): ?>
+            <dt>主类型</dt><dd><?= h($genreShow) ?><span class="dim"><?= h($genreSrc) ?></span></dd>
         <?php endif; ?>
 
         <?php if ($meta['region'] !== ''): ?>

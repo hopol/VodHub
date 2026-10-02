@@ -450,7 +450,10 @@ function buildMeta(array $detail, int $sourceId, array $types = [], ?array $enri
         // —— 富化附带 ——
         'adult'       => (float) ($enrich['adult'] ?? 0),
         'adult_warn'  => !empty($enrich['adult_warn']),
+        // 归一后的主类型（模型给的），可能为空串
         'genre_main'  => (string) ($enrich['genre_text'] ?? ''),
+        // 模型判不准时的兜底：原始 vod_class 前两个词（1.3.4 新增）
+        'genre_raw'   => (string) ($enrich['genre_raw'] ?? ''),
         'enriched'    => $enrich !== [],
     ];
 }

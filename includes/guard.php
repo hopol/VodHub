@@ -573,6 +573,33 @@ function guardCheck(string $bucket, int $perMinute): void {
  *   verdict: string         // ok / missing / unsafe / risky / no_rewrite
  * }
  */
+/**
+ * TLS 证书校验状态自检（1.3.4）。
+ *
+ * 为什么要有这个：证书校验**可以**被显式关掉（免费主机 CA 链不完整时需要），
+ * 但「关掉了自己不知道」是更危险的状态 —— 它会让整条信任链静默敞开，
+ * 而站点表面上一切正常。所以后台必须能一眼看出「当前未校验证书」。
+ *
+ * @return array{verify:bool, ok:bool, note:string}
+ */
+function guardTlsAudit(): array {
+    $verify = defined('TLS_VERIFY') ? (bool) TLS_VERIFY : true;
+    if ($verify) {
+        return [
+            'verify' => true,
+            'ok'     => true,
+            'note'   => '已校验上游 HTTPS 证书（安全默认值）',
+        ];
+    }
+    return [
+        'verify' => false,
+        'ok'     => false,
+        'note'   => '⚠ 已关闭证书校验：数据源地址、影片元数据与播放地址的往来流量'
+                 . '可被中间人读取与篡改。若非主机证书链不完整所迫，不建议关闭。'
+                 . '改法见 config.php 的 VODHUB_TLS_VERIFY。',
+    ];
+}
+
 function guardHtAudit(): array {
     static $cached = null;
     if ($cached !== null) {

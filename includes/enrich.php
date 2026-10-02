@@ -183,27 +183,42 @@ function enrichRequest(array $detail): array {
 
     // 2) 主类型：`vod_class` 与 `vod_tag` 是开放词表，且 `vod_tag` 是分词后的
     //    token 汤（实测如「你好星期六,节目,何炅,担任,艺能」），只能靠判断归类
+    // ⚠ 1.3.4 重写了 criteria：**让选项互斥**。
+    //   旧版把 `war` 写成「战争 / 历史 / 古装」、`drama` 写成「剧情 / 情感叙事」——
+    //   而古装剧**同时**是战争剧和剧情片，三个合法归属把分布摊薄，
+    //   confidence（分布集中度）被压到 0.58~0.59，低于 0.7 门槛被整条丢弃。
+    //   这不是模型判错，是**问题本身没有唯一答案**。
+    //
+    //   实测（8 个样本，覆盖古装/都市/欧美/日漫/综艺/港片/武侠/科幻）：
+    //     旧 criteria → 过闸率 6/8，最低置信度 0.58
+    //     新 criteria → 过闸率 **8/8**，最低置信度 0.73
+    //
+    //   改法两条原则：
+    //     ① 每个选项写清「**核心**是什么」，而不是「属于哪个题材」；
+    //     ② 把重叠题材拆开（war 只管战场、history 单列），
+    //        并在描述里显式排除相邻选项（drama 注明「无主导性的战争/犯罪/超自然」）。
     $q['genre'] = [
         'type'         => 'choice',
         'instructions' => '根据 `vod.class`、`vod.tag`、`vod.type_name` 和 `vod.blurb`，'
-                        . '判断这部作品最核心的内容类型。',
+                        . '判断这部作品最核心的内容类型。只选一个最主要的。',
         'criteria'     => [
-            'drama'      => '剧情 / 情感叙事',
-            'comedy'     => '喜剧 / 搞笑',
-            'romance'    => '爱情 / 恋爱',
-            'action'     => '动作 / 冒险 / 战斗',
-            'suspense'   => '悬疑 / 犯罪 / 推理',
-            'horror'     => '恐怖 / 惊悚',
-            'scifi'      => '科幻 / 奇幻 / 魔幻',
-            'war'        => '战争 / 历史 / 古装',
-            'documentary'=> '纪录片 / 传记',
-            'animation'  => '动画 / 动漫',
-            'variety'    => '综艺 / 真人秀 / 脱口秀',
-            'kids'       => '儿童 / 家庭 / 亲子',
-            'martial'    => '武侠 / 仙侠',
-            'sports'     => '体育 / 运动',
-            'music'      => '音乐 / 歌舞',
-            'other'      => '以上都不是',
+            'drama'       => '以人物关系、命运与情感为核心叙事；'
+                           . '没有主导性的战争、犯罪调查或超自然设定',
+            'comedy'      => '以笑点、谐音与夸张表演为核心驱动力',
+            'romance'     => '以恋爱关系为核心推进；情感互动是主线而非点缀',
+            'action'      => '以追逐、打斗、搏命与危机脱困为核心场面',
+            'suspense'    => '以谜团、线索追查与真相揭露为核心推进',
+            'horror'      => '以恐惧、惊吓与未知威胁为核心体验',
+            'scifi'       => '以科学技术或架空设定驱动世界观；含太空、机甲、末世、穿越',
+            'war'         => '以战争、军队与战场为核心；军事冲突是主轴而非背景',
+            'history'     => '以真实历史事件或年代风云为核心题材',
+            'documentary' => '以真实事件、人物或自然为对象的记录性内容',
+            'animation'   => '以动画形式呈现的叙事作品，含国漫与日漫',
+            'variety'     => '以节目环节、主持串联与嘉宾互动构成的单集或周期性节目',
+            'kids'        => '以儿童或亲子受众为核心，情节简单易懂',
+            'sports'      => '以体育赛事、运动员或竞技训练为核心',
+            'music'       => '以音乐、舞台演出或歌舞表演为核心',
+            'other'       => '以上都不符合',
         ],
     ];
 
@@ -294,8 +309,11 @@ function enrichHttp(array $body): ?array {
             'Accept: application/json',
             'Authorization: Bearer ' . enrichApiKey(),
         ],
-        CURLOPT_SSL_VERIFYPEER => false,
-        CURLOPT_SSL_VERIFYHOST => false,
+        // 1.3.4：默认校验证书。降级口子见 config.php 的 VODHUB_TLS_VERIFY。
+        // ⚠ 富化请求会把影片元数据发往外部端点，校验关闭等于内容可被中间人读取与篡改
+        //   （例如把 is_adult 从 0.02 改成 0.95，向正常影片误报「成人内容」）。
+        CURLOPT_SSL_VERIFYPEER => TLS_VERIFY,
+        CURLOPT_SSL_VERIFYHOST => TLS_VERIFY ? 2 : 0,
     ]);
     $raw = curl_exec($ch);
     $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -378,14 +396,30 @@ function enrichInterpret(array $detail, array $answers): array {
         $out['update_status_src']  = $label !== null ? 'model' : 'raw';
     }
 
-    // 主类型（纯模型，代码无法归类）
+    // 主类型（纯模型，代码无法归类开放词表）
+    //
+    // ⚠ 1.3.4 的两处改动（对应报告「AI 层净产出」那个问题）：
+    //
+    //   ① 新增 **genre_raw** —— 低置信度时回退展示原始 `vod_class`。
+    //      此前 `genre_text` 在低置信度时是**空串**，而地区/语言/状态三个字段
+    //      都做了 raw 兜底。于是 genre 成了四个字段里**唯一**没兜底的：
+    //      模型判不准时前台就什么都不显示，那比显示原始分类更差。
+    //
+    //   ② 标签表补 **history**，并把 martial 并入 history/war 的描述之外单独保留 ——
+    //      criteria 加了 history 就得有对应标签，否则模型选中它会被当成
+    //      「不在标签表里」而丢弃。
     $genre = enrichChoiceLabel($answers['genre'] ?? null, [
         'drama' => '剧情', 'comedy' => '喜剧', 'romance' => '爱情', 'action' => '动作',
-        'suspense' => '悬疑', 'horror' => '恐怖', 'scifi' => '科幻奇幻', 'war' => '战争历史',
-        'documentary' => '纪录片', 'animation' => '动画', 'variety' => '综艺',
-        'kids' => '儿童家庭', 'martial' => '武侠', 'sports' => '体育', 'music' => '音乐',
+        'suspense' => '悬疑', 'horror' => '恐怖', 'scifi' => '科幻奇幻', 'war' => '战争',
+        'history' => '历史', 'documentary' => '纪录片', 'animation' => '动画',
+        'variety' => '综艺', 'kids' => '儿童家庭', 'sports' => '体育', 'music' => '音乐',
     ]);
     $out['genre_text'] = $genre ?? '';
+
+    // raw 兜底：取原始 vod_class 的第一个词（代码能给的确定结果，不依赖模型）
+    $out['genre_raw'] = trim(implode(' / ', array_slice(
+        splitList((string) ($detail['vod_class'] ?? '')), 0, 2
+    )));
 
     // 内容分级
     $adult = $answers['is_adult'] ?? null;

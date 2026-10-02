@@ -48,7 +48,7 @@ foreach (['curl', 'pdo_sqlite'] as $requiredExt) {
 define('APP_NAME', '影视聚合站');
 
 // 版本号（与 CHANGELOG.md 保持一致）
-define('APP_VERSION', '1.3.4');
+define('APP_VERSION', '1.3.5');
 
 // ================================================================
 // 数据目录（安全基线 · 无 .htaccess 也能守住的那一条）
@@ -220,6 +220,39 @@ define('SESS_CSRF',      'csrf_token');
 
 // 后台默认密码（首次安装后请立即在后台修改）
 define('DEFAULT_ADMIN_PASSWORD', 'admin123');
+
+// ---------------------------------------------------------------- TLS 证书校验
+/**
+ * 是否校验上游的 HTTPS 证书。
+ *
+ * ⚠ **默认为 true（校验）**，这是 1.3.4 的安全修复。
+ *   此前 img.php / includes/enrich.php / includes/client.php 三处都写死
+ *   `CURLOPT_SSL_VERIFYPEER => false` —— 意味着数据源地址、管理员密码哈希、
+ *   影片元数据与播放地址的往来流量**全部暴露给中间人**。
+ *
+ * **为什么要留降级口子**：实测（badssl.com 自签名证书）
+ *   VERIFY=true  → 失败，HTTP 0，SSL certificate problem
+ *   VERIFY=false → 成功，HTTP 200
+ *   也就是说**免费主机的 CA 链一旦不完整，默认开启就会直接连不上** ——
+ *   表现为「所有数据源都超时」，属最难定位的一类故障。
+ *
+ *   所以保留显式降级，但：
+ *     ① 默认开启，需要降级的人自己选择；
+ *     ② 降级状态会在后台明确显示（见 guardHtAudit 的同级检查）。
+ *
+ * 改法（二选一，写在下方取消注释即可）：
+ *   define('VODHUB_TLS_VERIFY', false);
+ * 或环境变量 VODHUB_TLS_VERIFY=0
+ */
+if (!defined('VODHUB_TLS_VERIFY')) {
+    $vhTlsEnv = getenv('VODHUB_TLS_VERIFY');
+    define('VODHUB_TLS_VERIFY', ($vhTlsEnv === false || $vhTlsEnv === '')
+        ? true                      // 默认：校验
+        : !in_array(strtolower((string) $vhTlsEnv), ['0', 'false', 'off', 'no'], true));
+}
+
+// 降级状态是否对外可见（后台与 vp.php 会提示「当前未校验证书」）
+define('TLS_VERIFY', (bool) VODHUB_TLS_VERIFY);
 
 // 时区
 date_default_timezone_set('Asia/Shanghai');

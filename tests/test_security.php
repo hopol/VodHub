@@ -348,4 +348,122 @@ t('.htaccess 仍只含 FileInfo 类指令', static function () use ($root): void
         '出现需要 Options/Indexes 权限的指令 —— 多数免费主机只给 FileInfo，会整站 500');
 });
 
+// ==================================================================
+// 五、TLS 证书校验（1.3.4 修：此前三处写死 VERIFY=false）
+// ==================================================================
+
+group('TLS：默认校验证书，降级须显式');
+
+t('三处出站请求都不再写死 VERIFY=false', static function (): void {
+    foreach (['img.php', 'includes/enrich.php', 'includes/client.php'] as $f) {
+        $src = t_code($f);
+        ok(
+            !preg_match('/CURLOPT_SSL_VERIFYPEER\s*=>\s*false/', $src),
+            "{$f} 仍写死 SSL_VERIFYPEER => false —— 信任链完全敞开"
+        );
+        ok(
+            !preg_match('/CURLOPT_SSL_VERIFYHOST\s*=>\s*false/', $src),
+            "{$f} 仍写死 SSL_VERIFYHOST => false"
+        );
+    }
+});
+
+t('三处都改用 TLS_VERIFY 常量', static function (): void {
+    foreach (['img.php', 'includes/enrich.php', 'includes/client.php'] as $f) {
+        $src = t_code($f);
+        ok(
+            str_contains($src, 'CURLOPT_SSL_VERIFYPEER => TLS_VERIFY'),
+            "{$f} 未使用 TLS_VERIFY 常量"
+        );
+    }
+});
+
+t('SSL_VERIFYHOST 用 2/0 而非 true/false', static function (): void {
+    // curl 的 VERIFYHOST 语义特殊：1 = 校验，2 = 校验且通配符，
+    // 0 = 不校验。传 true 会被当成 1（不校验通配符），虽不出错但不严谨。
+    foreach (['img.php', 'includes/enrich.php', 'includes/client.php'] as $f) {
+        ok(
+            str_contains(t_code($f), 'CURLOPT_SSL_VERIFYHOST => TLS_VERIFY ? 2 : 0'),
+            "{$f} 的 SSL_VERIFYHOST 应为 'TLS_VERIFY ? 2 : 0'"
+        );
+    }
+});
+
+t('【关键】默认是校验（不是降级）', static function (): void {
+    // 判据用**真实运行结果**，不靠正则猜源码 ——
+    // 正则判断常量的默认值要跨行匹配 `[` 换行 `]`，转义一层层套极易出错
+    // （这次已经因此连踩两次）。直接跑一次最可靠。
+    $php = escapeshellarg(PHP_BINARY);
+    $cfg = escapeshellarg(dirname(__DIR__) . '/config.php');
+    $code = 'require ' . $cfg . '; echo VODHUB_TLS_VERIFY ? "1" : "0";';
+
+    // 不设环境变量 → 必须是 1（校验）
+    $def = shell_exec('env -u VODHUB_TLS_VERIFY ' . $php . ' -r ' . escapeshellarg($code));
+    eq('1', trim((string) $def), '默认必须是校验（VODHUB_TLS_VERIFY = true）');
+});
+
+t('显式降级确实生效（各取值都识别）', static function (): void {
+    $php = escapeshellarg(PHP_BINARY);
+    $cfg = escapeshellarg(dirname(__DIR__) . '/config.php');
+    $code = 'require ' . $cfg . '; echo VODHUB_TLS_VERIFY ? "1" : "0";';
+
+    // 需要降级的取值：0 / false / off / no（小写不敏感）
+    foreach (['0', 'false', 'off', 'no', 'FALSE', 'Off'] as $v) {
+        $r = shell_exec('VODHUB_TLS_VERIFY=' . $v . ' ' . $php . ' -r ' . escapeshellarg($code));
+        eq('0', trim((string) $r), "VODHUB_TLS_VERIFY={$v} 应解析为「不校验」");
+    }
+    // 需要开启的取值
+    foreach (['1', 'true', 'on', 'yes'] as $v) {
+        $r = shell_exec('VODHUB_TLS_VERIFY=' . $v . ' ' . $php . ' -r ' . escapeshellarg($code));
+        eq('1', trim((string) $r), "VODHUB_TLS_VERIFY={$v} 应解析为「校验」");
+    }
+});
+
+t('降级有环境变量与常量两条显式路径', static function (): void {
+    $src = t_code('config.php');
+    ok(str_contains($src, "getenv('VODHUB_TLS_VERIFY')"), '应支持 VODHUB_TLS_VERIFY 环境变量');
+    ok(
+        substr_count($src, 'VODHUB_TLS_VERIFY') >= 3,
+        '常量与降级说明都应围绕 VODHUB_TLS_VERIFY'
+    );
+});
+
+t('【关键】降级状态可见（后台能看出没在校验）', static function (): void {
+    require_once __DIR__ . '/../includes/guard.php';
+    $r = guardTlsAudit();
+    ok(is_array($r) && array_key_exists('verify', $r), 'guardTlsAudit() 应返回含 verify 的数组');
+    ok(array_key_exists('ok', $r), '应返回 ok 供后台标红');
+    ok(
+        !empty($r['note']),
+        '应有说明文案 —— 「关掉了自己不知道」比开着更危险'
+    );
+});
+
+t('【行为】降级时 ok=false 且文案点明风险', static function () use ($root): void {
+    // 用子进程分别跑两种配置，验证两种分支
+    $php = escapeshellarg(PHP_BINARY);
+    $guard = escapeshellarg(dirname(__DIR__) . '/includes/guard.php');
+    $cfg   = escapeshellarg(dirname(__DIR__) . '/config.php');
+
+    // 默认（校验）
+    $on = shell_exec("VODHUB_TLS_VERIFY=1 $php -r "
+        . escapeshellarg("require $cfg; require $guard; \$r=guardTlsAudit(); echo \$r['ok']?'1':'0';"));
+    eq('1', trim((string) $on), '校验开启时应报 ok');
+
+    // 显式降级
+    $off = shell_exec("VODHUB_TLS_VERIFY=0 $php -r "
+        . escapeshellarg("require $cfg; require $guard; \$r=guardTlsAudit(); echo \$r['ok']?'1':'0';"));
+    eq('0', trim((string) $off), '降级时必须报 ok=false，让后台标红');
+});
+
+t('【行为】证书有问题时，开校验确实连不上（故降级口子必须留）', static function (): void {
+    // 记录这一实测结论，作为「为什么保留降级开关」的依据。
+    // 不在测试里真连外网（CI 无网络），只断言降级路径存在。
+    ok(
+        str_contains(t_code('config.php'), 'VODHUB_TLS_VERIFY'),
+        '降级开关必须存在：实测自签名证书下 VERIFY=true 直接失败（HTTP 0），'
+        . 'VERIFY=false 才通（HTTP 200）—— 免费主机 CA 链不完整时需要它'
+    );
+});
+
 finish();

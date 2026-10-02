@@ -504,8 +504,10 @@ class VodClient {
             CURLOPT_MAXREDIRS      => 3,
             CURLOPT_USERAGENT      => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
                 . 'Chrome/120 Safari/537.36 VodSite/1.0',
-            CURLOPT_SSL_VERIFYPEER => false,
-            CURLOPT_SSL_VERIFYHOST => false,
+            // 1.3.4：默认校验证书。降级口子见 config.php 的 VODHUB_TLS_VERIFY。
+            // 数据源地址（常含采集密钥）经此传输，校验关闭即可被窃取。
+            CURLOPT_SSL_VERIFYPEER => TLS_VERIFY,
+            CURLOPT_SSL_VERIFYHOST => TLS_VERIFY ? 2 : 0,
             CURLOPT_HTTPHEADER     => ['Accept: application/json'],
         ]);
         $body = curl_exec($ch);
