@@ -148,6 +148,60 @@ CURLOPT_FOLLOWLOCATION => false,   // 现在
   顺带修掉一个 Web 端致命错误：`STDOUT` 常量只在 CLI 下存在，
   浏览器访问时直接 `Fatal error`（这个 bug 命令行下测不出来）。
 
+### 修复：`getenv` / `putenv` 被禁用时是**致命错误**（一处炸 = 整站 500）
+
+起因是上一条里我顺口写的一句「`getenv` 被禁用时返回 `false` 而非抛错」。
+
+**那句话是错的，实测纠正：**
+
+```
+$ php -d disable_functions=getenv -r 'getenv("X");'
+PHP Fatal error: Uncaught Error: Call to undefined function getenv()
+```
+
+PHP 8 在函数出现在 `disable_functions` 里时抛的是**致命错误**，
+既不是返回 `false`，也不是 warning。而免费主机的 `disable_functions`
+因主机而异，不能假设它一定可用。
+
+**全站四处裸调 `getenv`**，任一处都会在禁用它的主机上打死整站：
+
+| 位置 | 读什么 | 禁用后的后果 |
+|------|--------|-------------|
+| `config.php:162` | `VODHUB_DATA_DIR` | 数据目录解析失败 → 整站 500 |
+| `config.php:293` | `VODHUB_TLS_VERIFY` | 证书开关失效 |
+| `includes/guard.php:48` | `VODHUB_DEBUG` | 排障开关失效 |
+| `includes/pagecache.php:150` | `VH_BUCKET` | 静态缓存时间桶失效 |
+
+**修法**：`config.php` 提供 `vhGetEnv()` 包装（函数不存在时返回 `false`），
+四处全部改走它。
+
+> ⚠ **实现细节**：包装函数必须定义在 `config.php` **最前面**。
+> PHP 对普通函数有「提升」机制，但**对被 `disable_functions` 移除的函数无效** ——
+> 我第一版放在文件中部，结果 `vhGetEnv()` 自己先报了 undefined。
+
+**测试侧同样处理**（测试工具应该比它测试的代码更耐用）：
+
+| 位置 | 处理 |
+|------|------|
+| `tests/report.php` 的 `NO_COLOR` / `ANSICON` / `WT_SESSION` | 改走 `vhGetEnv()` |
+| `tests/bootstrap.php` 的 `VHTEST_JSON` | 改走 `vhGetEnv()` |
+| `tests/bootstrap.php` 的 `putenv` | 加存在性判断，禁用时退回 `define()` 常量 |
+
+**新增断言**：全站六个主要文件不得有裸调 `getenv()`。
+
+**实测五种环境，均 195 项全绿**：
+
+| 环境 |
+|------|
+| （不禁） |
+| 禁 `shell_exec,exec,proc_open` |
+| 禁 `shell_exec,exec,proc_open,getenv` |
+| 禁 `putenv` |
+| 禁 `shell_exec,exec,proc_open,getenv,putenv` |
+
+**顺带把那句错误直觉写进 CHANGELOG** —— 错误的直觉比没有直觉更危险，
+写下来才不会重犯第二次。
+
 ### 修正：测试里的 `shell_exec` 导致免费主机上三项失败
 
 **1.3.5 首次发布时，线上测试报告报了三项失败：**
