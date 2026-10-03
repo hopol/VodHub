@@ -47,14 +47,27 @@ $isCli = PHP_SAPI === 'cli' || PHP_SAPI === 'phpdbg';
 // 眼睛只会数有颜色的那些，于是漏报了一次失败。
 // 有了 JSON，CI 与脚本能读到确切的 pass/fail/total，
 // 不再需要任何人（或任何模型）从终端文本里推断结论。
+// ⚠⚠ **`$argv` 只在 CLI SAPI 下存在。**
+//   浏览器访问 tests/run.php 时它是 undefined —— 直接 array_slice() 会
+//   `TypeError: array_slice(): Argument #1 must be of type array, null given`
+//   整站 500。**1.3.9 首次上传就撞上了这个。**
+//
+//   两侧都要判，不能只判 SAPI：register_argc_argv 被关闭时 CLI 下也没有 $argv。
+//   教训与 1.3.5 的 shell_exec 同类：**CLI 测得通 ≠ Web 跑得通**。
 $asJson = false;
 $filter = '';
-foreach (array_slice($argv, 1) as $arg) {
+$cliArgs = (PHP_SAPI === 'cli' || PHP_SAPI === 'phpdbg') && isset($argv) && is_array($argv)
+    ? array_slice($argv, 1)
+    : [];
+foreach ($cliArgs as $arg) {
     if ($arg === '--json') {
         $asJson = true;
     } else {
         $filter = (string) $arg;
     }
+}
+if (!$isCli && isset($_GET['json'])) {
+    $asJson = (string) $_GET['json'] !== '0';
 }
 if ($filter === '' && isset($_GET['f'])) {
     $filter = (string) $_GET['f'];

@@ -148,6 +148,73 @@ CURLOPT_FOLLOWLOCATION => false,   // 现在
   顺带修掉一个 Web 端致命错误：`STDOUT` 常量只在 CLI 下存在，
   浏览器访问时直接 `Fatal error`（这个 bug 命令行下测不出来）。
 
+### 修复：`$argv` 只在 CLI 存在 —— 浏览器访问测试报告直接 500
+
+**1.3.9 首次上传后 `https://站点/tests/run.php` 直接 500**：
+
+```
+TypeError: array_slice(): Argument #1 ($array) must be of type array, null given
+  at tests/run.php:52
+```
+
+**原因**：上一版加 `--json` 参数时写了 `array_slice($argv, 1)`，
+而 **`$argv` 只在 CLI SAPI 下存在**，浏览器访问时它是 `undefined`。
+**而我只跑了命令行测试** —— 于是 CLI 全绿、Web 全挂。
+
+> **这与 1.3.5 的 `shell_exec` 是同一类错误**：
+> 在一种环境下验证通过，就以为另一种环境也没问题。
+> `tests/run.php` 与 `tests/report.php` 都是 **CLI/Web 双入口**，
+> 任何一处分支都必须两边都验。
+
+**修法**：两侧都判（不只判 SAPI，因为 `register_argc_argreg` 被关时 CLI 下也没有）：
+
+```php
+$cliArgs = (PHP_SAPI === 'cli' || PHP_SAPI === 'phpdbg') && isset($argv) && is_array($argv)
+    ? array_slice($argv, 1)
+    : [];
+```
+
+顺带支持 `?json=1`，让网页端也能拿到机器可读结果。
+
+---
+
+### 新增：CLI/Web 双入口一致性判据（3 项）
+
+新增三条断言，**专门拦这类「一边能跑一边不能跑」的缺陷**：
+
+| 断言 | 拦什么 |
+|------|--------|
+| `run.php` 的 `$argv` 有 `isset` 守卫 | 浏览器访问时 `array_slice(null)` → 500 |
+| `report.php` 的 `STDOUT` 有 `defined()` 守卫 | Web 下 `Undefined constant "STDOUT"` → 致命错误 |
+| 两个 Web 入口文件都判了 `PHP_SAPI` | CLI-only 符号漏判 |
+
+> **CI 注入回归从 2 条扩到 4 条**，新增的两条正是上面两个真实事故的复现。
+> 4 条注入**均已验证**：注入后变红、还原后恢复全绿。
+
+### ⚠ 这三条判据本身，前两版都是错的
+
+值得单独记下来，因为**这正是 1.3.9 那句话的翻版**：
+
+> 「验证不该靠人眼看」——**验证判据本身也需要被验证**。
+
+| 版本 | 写法 | 为什么不行 |
+|------|------|-----------|
+| ① | 正则找「`$argv` 后面有没有 `isset`」 | 剥注释时把 `defined('STDOUT')` 里的字符串字面量也剥了 → **误报** |
+| ② | 行级判定，守卫条件含 `str_contains($ctx, '$cliArgs')` | 被检查的那行**自己含 `$cliArgs`** → 自己满足自己 → **注入后测试依然绿** |
+| ②b | 同上，但拼上一行时忘了剥注释 | 上一行的**说明文字**里写了 `isset($argv)` → **又被骗一次** |
+| **③（现行）** | 同行或上一行必须字面含 `isset($argv)`，拼接前先剥注释 | 简单到不会自欺 |
+
+**② 与 ②b 是同一个错误的两次重演**：判据看起来在检查，实际没有。
+**只有把已知坏代码注入进去验证判据会红，判据才算数。**
+
+> 另外还试过「在测试里真起 HTTP 服务器请求自己」——
+> **死锁**（单进程里 `proc_open` 起服务器再 `file_get_contents` 会互相等），
+> 且不适用于禁用进程函数的主机。已放弃，改用行级静态判定。
+
+**这一节与本项目此前踩过的三个坑同源**：
+`global` 回归测试没剥注释、`STDOUT` 没判 SAPI、`shell_exec` 用在测试里。
+**四次都是「验证看起来做了，实际没生效」。**
+
 ### 补齐：TLS 状态接入后台（V2 报告发现的安全缺口）
 
 `guardTlsAudit()` 在 1.3.5 已实现并有测试，但**后台没有调用它** ——

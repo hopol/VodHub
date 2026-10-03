@@ -126,6 +126,23 @@ $injections = [
         'find'  => 'CURLOPT_FOLLOWLOCATION => false',
         'repl'  => 'CURLOPT_FOLLOWLOCATION => true',
     ],
+    [
+        // ⚠ 这条来自 1.3.9 的真实事故：加 --json 时用了 array_slice($argv, 1)，
+        //   而 **$argv 只在 CLI SAPI 存在** —— 命令行测得通，浏览器直接 500。
+        //   「CLI 测通 ≠ Web 跑通」这个教训，必须由 CI 钉住。
+        'name'  => '去掉 run.php 的 $argv 守卫（复现 1.3.9 的 Web 500）',
+        'apply' => null,
+        'file'  => 'tests/run.php',
+        'find'  => "&& isset(\$argv) && is_array(\$argv)",
+        'repl'  => "&& is_array(\$argv)",
+    ],
+    [
+        'name'  => '去掉 report.php 的 STDOUT 守卫（Web 下 Undefined constant）',
+        'apply' => null,
+        'file'  => 'tests/report.php',
+        'find'  => "    if (!defined('STDOUT')) {\n        return false;\n    }\n",
+        'repl'  => '',
+    ],
 ];
 
 foreach ($injections as $inj) {

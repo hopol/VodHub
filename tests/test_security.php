@@ -579,4 +579,95 @@ t('【行为】证书有问题时，开校验确实连不上（故降级口子�
     );
 });
 
+// ==================================================================
+// 六、CLI/Web 双入口一致性（1.3.9 曾因此整站 500）
+// ==================================================================
+
+group('双入口：CLI-only 符号不得在 Web 下致命');
+
+t('run.php 的 $argv 有存在性守卫（Web 下会 500）', static function (): void {
+    // ⚠⚠ **1.3.9 首次上传后 tests/run.php 在浏览器里直接 500**：
+    //   `TypeError: array_slice(): Argument #1 must be of type array, null given`
+    //   原因 —— **`$argv` 只在 CLI SAPI 下存在**，浏览器访问时它是 undefined。
+    //   我加 `--json` 参数时用了 `array_slice($argv, 1)`，而只在命令行测过。
+    //
+    // ⚠ **这个判据的前两版都是错的，各栽一次**：
+    //   ① 正则找「$argv 后面有没有 isset」→ 剥注释时把 defined('STDOUT')
+    //      里的字符串字面量也剥了，误报；
+    //   ② 行级判定但守卫条件含 `str_contains($ctx,'$cliArgs')`
+    //      → 被检查的那行**自己含 $cliArgs**，自己满足自己，注入后测试依然绿；
+    //      拼上一行时又忘了剥注释，又被上一行的说明文字骗了一次。
+    //
+    //   **教训：判据必须被「注入已知坏代码」验证过，否则它可能只是看起来在检查。**
+    //
+    // 现在的规则，简单到不会自欺：
+    //   **凡出现 `$argv` 的非注释行，同一行或上一行必须字面含 `isset($argv)`**
+    //   （拼接前先剥注释）。
+    $src   = (string) file_get_contents(dirname(__DIR__) . '/tests/run.php');
+    $lines = explode("\n", $src);
+
+    $unsafe = [];
+    foreach ($lines as $i => $line) {
+        if (!str_contains($line, '$argv')) {
+            continue;
+        }
+        if (preg_match('/^\s*(\/\/|\*|#)/', $line)) {
+            continue;   // 注释行
+        }
+        // 剥掉本行与上一行的注释，只看真实代码
+        $ctx = (string) preg_replace(
+            ['#//[^\n]*#', '#/\*.*?\*/#s'],
+            '',
+            $line . "\n" . ($lines[$i - 1] ?? '')
+        );
+        if (!str_contains($ctx, 'isset($argv)')) {
+            $unsafe[] = ($i + 1) . ': ' . trim($line);
+        }
+    }
+    eq([], $unsafe,
+       '这些行的 $argv 同行或上一行没有 isset($argv) 守卫 —— '
+       . '浏览器访问 tests/run.php 时会 500（$argv 只在 CLI SAPI 存在）');
+});
+
+t('report.php 的 STDOUT 有 defined() 守卫', static function (): void {
+    // 上一次修复过（实测 Web 下 Fatal error: Undefined constant "STDOUT"），
+    // 这里用**逐行判定**钉住，不靠正则（正则会误伤 defined('STDOUT') 那行本身）。
+    $src   = (string) file_get_contents(dirname(__DIR__) . '/tests/report.php');
+    $lines = explode("\n", $src);
+
+    $seenGuard = false;
+    $unsafe    = [];
+    foreach ($lines as $i => $line) {
+        if (preg_match('/^\s*(\/\/|\*|#)/', $line)) {
+            continue;
+        }
+        // defined('STDOUT') 这行本身就是守卫
+        if (preg_match('/defined\(\s*[\'"]STDOUT[\'"]\s*\)/', $line)) {
+            $seenGuard = true;
+            continue;
+        }
+        // 真的使用 STDOUT（不是字符串字面量、不是 defined 检查）
+        if (preg_match('/(?<![A-Za-z_\'"])STDOUT(?![A-Za-z_])/i', $line)
+            && !preg_match('/[\'"]STDOUT[\'"]/', $line)) {
+            if (!$seenGuard) {
+                $unsafe[] = ($i + 1) . ': ' . trim($line);
+            }
+        }
+    }
+    eq([], $unsafe, '这些行在守卫之前就用了 STDOUT —— Web SAPI 下该常量不存在，'
+                  . '实测会 Fatal error: Undefined constant "STDOUT"');
+    ok($seenGuard, 'report.php 应有 defined(\'STDOUT\') 守卫');
+});
+
+t('两个 Web 入口文件都判了 PHP_SAPI', static function (): void {
+    // ci-check.php 不需要 —— 它靠 function_exists('exec') 判断，
+    // 且只在 CI 上跑，不提供 Web 入口。
+    foreach (['tests/run.php', 'tests/report.php'] as $f) {
+        ok(
+            str_contains((string) file_get_contents(dirname(__DIR__) . '/' . $f), 'PHP_SAPI'),
+            "{$f} 未按 PHP_SAPI 分流 —— CLI-only 符号在 Web 下会炸"
+        );
+    }
+});
+
 finish();
