@@ -1078,10 +1078,24 @@ t('CHANGELOG 里 1.3.5 之后的每个版本都有独立的二级标题', static
     } else {
         $expect[] = $cur;   // 非 1.3 线：只要求当前版本有标题
     }
-    $missing = array_values(array_filter($expect, static fn ($v) => !in_array($v, $tops, true)));
+    // ⚠ 允许「跳过」的版本：发过包又收回的。
+    //   1.3.13 的包发出后被实测发现一处误报，修好后作为 1.3.14 发布 ——
+    //   那种情况下 CHANGELOG 里**不该**有 1.3.13 段落（它没作为正式版存在过）。
+    //   写死跳过名单和写死检查名单一样会漂移，所以**从 CHANGELOG 自己读**：
+    //   哪一版正文里写了「本版包含原本标记为 X 的全部内容」，X 就是被折叠的那一版。
+    $folded = [];
+    if (preg_match('/本版包含原本标记为 ([\d.]+) 的全部内容/u', $md, $fm)) {
+        $folded[] = $fm[1];
+    }
+
+    $missing = array_values(array_filter(
+        $expect,
+        static fn ($v) => !in_array($v, $tops, true) && !in_array($v, $folded, true)
+    ));
     eq([], $missing,
         '这些版本在 CHANGELOG 里没有独立的「## [x.y.z]」二级标题：'
         . implode('、', $missing)
+        . (count($folded) ? '（已声明折叠：' . implode('、', $folded) . '）' : '')
         . "\n\n挂成 ### 子节的后果：Keep a Changelog 的自动链接全断，"
         . "\n而且**按版本号搜更新日志的人搜不到** ——"
         . "\n而「查 1.3.9 改了什么」正是站长升级后的第一动作。" );
@@ -1089,6 +1103,36 @@ t('CHANGELOG 里 1.3.5 之后的每个版本都有独立的二级标题', static
     $dup = array_keys(array_filter(array_count_values($tops), static fn ($n) => $n > 1));
     eq([], $dup, 'CHANGELOG 里有重复的版本标题：' . implode('、', $dup));
 });
+
+/**
+ * 这个路径是否属于「运行期产物 / 开发文件」，即不该计入部署载荷。
+ *
+ * ⚠⚠ **必须按路径前缀判，不能只判第一段** —— 本项目在线上踩过：
+ *   `in_array(explode('/', $rel)[0], $skipDirs)` 会把
+ *   `static/imgcache/cover.jpg` 判成 'static'（不在排除列表里）→
+ *   **访客访问后自动下载的封面图全被算成了部署载荷**，
+ *   站长实测多出 325 KB。
+ *
+ * ⚠ 边界检查（`$dir . '/'`）同样必需：没有它，排除项 'c' 会把
+ *   **'config.php' 一起吃掉** —— 那是站点启动的命门。
+ *
+ * 抽成具名函数而不是内联，是为了让**自检与实际统计共用同一份实现**：
+ * 早先版本把它们写成两套独立代码，于是「注入真实逻辑变坏」时自检毫无反应 ——
+ * 那正是本项目栽过的「判据自欺」：判据测的是另一样东西。
+ *
+ * @param string $rel      相对站点根的路径，如 'static/imgcache/a.jpg'
+ * @param array  $skipDirs 排除目录表（键是路径，值是原因）
+ */
+function t_payload_excluded(string $rel, array $skipDirs): bool {
+    $rel = ltrim($rel, '/');
+    foreach (array_keys($skipDirs) as $dir) {
+        $dir = trim((string) $dir, '/');
+        if ($dir !== '' && ($rel === $dir || str_starts_with($rel, $dir . '/'))) {
+            return true;
+        }
+    }
+    return false;
+}
 
 t('README 的体积宣传与实测对得上', static function () use ($root): void {
     // ⚠ 判据刻意做成「实测 vs 声明」，而不是去 grep 某个写死的数字：
@@ -1107,7 +1151,26 @@ t('README 的体积宣传与实测对得上', static function () use ($root): vo
     //
     //   这三条都是「不在站点根目录长期存在」的文件。
     //   口径若与 README 不一致，这条判据就只是在给自己制造红点。
-    $skipDirs = ['.git', 'docs', 'tests', 'runtime', '.github', 'c', 'static/imgcache'];
+    // ⚠⚠⚠ **排除必须按「路径前缀」判，不能只判顶层目录名。**
+    //
+    //   踩过的坑：把 'static/imgcache' 放进 skipDirs，而判据写成
+    //   `in_array(explode('/', $rel)[0], $skipDirs)`。
+    //   而 static/imgcache/cover-xxx.jpg 的第一段是 **'static'**，不在列表里
+    //   → **用户下载的封面图全被算成了「部署载荷」**。
+    //   线上实测：judged 1159 KB vs 实际 866 KB，差额就是几百张封面。
+    //
+    //   这类 bug 的形状很典型：**排除项写对了、匹配方式写错了，两者都不会报错。**
+    //   所以下面用前缀匹配而不是「取第一段去比对」，且逐条注明为什么排除。
+    $skipDirs = [
+        '.git'          => '版本库',
+        'docs'          => '文档，部署不必上传',
+        'tests'         => '开发工具，部署不必上传',
+        'runtime'       => 'SQLite 与运行期缓存',
+        '.github'       => 'CI 配置',
+        'c'             => '页面静态缓存（可随时删，会自动重建）',
+        'static/imgcache' => '★ 图片本地缓存：里面是**用户访问后自动下载的封面图**，'
+                           . '数量与体积随站点运行增长，不属于「安装体积」',
+    ];
     $skipFiles = [
         'vp.php'            => '升级体检脚本，跑完即删',
         'CHANGELOG.md'      => '更新日志，给人读的',
@@ -1123,10 +1186,7 @@ t('README 的体积宣传与实测对得上', static function () use ($root): vo
             continue;
         }
         $rel = substr((string) $f->getPathname(), strlen($root) + 1);
-        if (in_array(explode('/', $rel)[0], $skipDirs, true)) {
-            continue;
-        }
-        if (isset($skipFiles[$rel])) {
+        if (t_payload_excluded($rel, $skipDirs) || isset($skipFiles[$rel])) {
             continue;
         }
         $bytes += (int) $f->getSize();
@@ -1149,6 +1209,37 @@ t('README 的体积宣传与实测对得上', static function () use ($root): vo
     //   而「往小说」才是会误导人的那种。
     //   把两个方向都判红会逼着人把判据改成「精确等于某个魔数」，
     //   那才是真正的退步 —— 详见同文件里契约 1 的「扫出来而不是列出来」。
+    // ---- 判据自检：排除逻辑本身对不对？----
+    //
+    // ⚠⚠ **这一段是被线上的一次真实误报逼出来的。**
+    //
+    //   1.3.13 的排除列表里写了 'static/imgcache'，而匹配写成
+    //   `in_array(explode('/', $rel)[0], $skipDirs)`。
+    //   而 static/imgcache/cover-xxx.jpg 的第一段是 **'static'** → 不在列表里
+    //   → **用户访问后自动下载的封面图全被算成了「部署载荷」**。
+    //   站长实测：判据说 1.191 MB，而干净树只有 0.866 MB，差额 325 KB 全是封面。
+    //
+    //   这类 bug 的形状很典型：**排除项写对了、匹配方式写错了，两者都不会报错。**
+    //   所以下面把「哪些必须排除 / 哪些必须计入」逐条钉死。
+    $excluded = ['static/imgcache/a.jpg', 'c/x.html', 'runtime/data.db',
+                 'docs/x.md', 'tests/run.php', '.github/workflows/ci.yml', '.git/config'];
+    $included = ['config.php', 'includes/guard.php', 'static/style.css',
+                 'static/js/hls.min.js', 'admin.php', 'img.php', 'LICENSE', 'robots.txt'];
+    $isExcluded = static fn (string $rel): bool => t_payload_excluded($rel, $skipDirs);
+    $wronglyIncluded = array_values(array_filter($excluded, static fn ($f) => !$isExcluded($f)));
+    eq([], $wronglyIncluded,
+        "这些路径本该排除（运行期产物 / 开发文件），却被算进了部署载荷：\n  "
+        . implode("\n  ", $wronglyIncluded)
+        . "\n\n★ 特别注意 static/imgcache：那是**访客访问后自动下载的封面图**，"
+        . "\n  体积随站点运行增长，与「安装体积」无关。"
+        . "\n  判据必须按**路径前缀**匹配，不能只判第一段 —— "
+        . "\n  explode('/', 'static/imgcache/a.jpg')[0] 是 'static'，不是 'static/imgcache'。"
+    );
+    $wronglyExcluded = array_values(array_filter($included, static fn ($f) => $isExcluded($f)));
+    eq([], $wronglyExcluded,
+        "这些文件是站点运行所需，却被误排除 —— 那会让实测值偏小，"
+        . "等于用同一个错误掩盖另一个：\n  " . implode("\n  ", $wronglyExcluded));
+
     ok(
         (float) $m[1] + 0.002 >= $mb,
         sprintf(
