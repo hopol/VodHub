@@ -3,7 +3,7 @@
  * default 模板 - 搜索页
  * 变量：$wd, $sources, $source, $sourceId, $page, $data
  */
-require_once __DIR__ . '/header.php';
+require tplInclude('header.php', $tplName);
 ?>
 
 <div class="list-head">
@@ -57,4 +57,4 @@ require_once __DIR__ . '/header.php';
     <?php endif; ?>
 <?php endif; ?>
 
-<?php require_once __DIR__ . '/footer.php'; ?>
+<?php require tplInclude('footer.php', $tplName); ?>

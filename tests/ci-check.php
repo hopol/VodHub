@@ -253,6 +253,37 @@ $injections = [
         'repl'  => "    return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'bmp', 'ico', 'svg'];",
     ],
     [
+        // ⚠ 1.3.12 去重时踩到并修掉的一个真 bug：
+        //   模板页面内部原本写 `require_once __DIR__ . '/footer.php'` 引用同级文件，
+        //   而各模板里与 default 逐字节相同的 footer.php **被删掉了**。
+        //   `__DIR__` 是硬路径、零回退 —— 于是唯一必须保留的 bilibili/list.php
+        //   直接 `Failed opening required .../bilibili/footer.php` 整页 500。
+        //
+        //   其余模板之所以没事，正是因为它们的 list.php 也被删了（走 renderTemplate 回退）。
+        //   也就是说：**当时只有 1/20 的概率会暴露**。
+        //
+        //   这条注入把那个雷重新埋回去，验证 test_contracts 的契约 5 会响。
+        //   ⚠ 期望「解析失败」也算变红 —— run.php 解析不了注入后的文件时
+        //   会如实报「该测试文件未产生任何结果」，退出码非 0，判定照样成立。
+        'name'  => '把模板的 tplInclude 改回 __DIR__ 硬路径（复现去重时的整页 500）',
+        'apply' => null,
+        'file'  => 'templates/bilibili/list.php',
+        'find'  => "require tplInclude('footer.php', \$tplName);",
+        'repl'  => "require_once __DIR__ . '/footer.php';",
+    ],
+    [
+        // ⚠ 1.3.12 最危险的一处改动：
+        //   去重删掉了非 default 模板的 index.php，而 tplExists() 原来只认 index.php。
+        //   若有人「顺手改回去」，resolveTemplate() 一路回退 default、
+        //   adminActionEditTemplate() 直接拒绝保存 ——
+        //   **4 套非 default 模板静默全部失效，且没有任何报错**。
+        'name'  => '把 tplExists() 的判据改回只认 index.php（非 default 模板会静默全废）',
+        'apply' => null,
+        'file'  => 'includes/template.php',
+        'find'  => "    return is_file(tplRoot() . '/' . \$name . '/theme.json');",
+        'repl'  => "    return is_file(tplRoot() . '/' . \$name . '/index.php');",
+    ],
+    [
         // 1.3.4：`'secure' => true` 写死会让**纯 HTTP 的免费主机登录完全失效**
         // （Cookie 发不出去，表现为「密码对但进不去」，极难查）。
         // 本项目大量部署在没有 HTTPS 的免费空间上，所以必须按当前请求动态判断。

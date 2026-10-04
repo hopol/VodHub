@@ -70,8 +70,21 @@ jobs:
       - name: 模板结构完整性
         run: |
           set -euo pipefail
-          # 每套模板必须具备的文件（缺失会静默回退 default，容易被忽略）
-          required="theme.json header.php footer.php index.php list.php play.php search.php history.php login.php player_script.php"
+          # ⚠ 1.3.12 模板去重后，本步骤的判据必须同步改 —— 否则会一直红。
+          #
+          # 去重前：每套模板都必须有 9 个页面文件 + theme.json + style.css。
+          # 去重后：**只有 theme.json / style.css / header.php 是模板专属的**，
+          # 其余页面文件（index/list/play/search/history/login/footer/player_script
+          # 与 partials/*）在 default 之外已全部删除，缺失时由
+          # renderTemplate() / tplPartial() 回退到 default。
+          #
+          # 为什么能删：这两个函数本来就有回退逻辑，且 tplExists() 的判据
+          # 在 1.3.12 改成了「有 theme.json」—— 改之前只认 index.php，
+          # 删掉 index.php 会让非 default 模板**静默整个失效且不报错**。
+          # 详见 includes/template.php 的 tplExists() 注释。
+          #
+          # theme.json 现在是「这个模板存在」的标记，**不可删**。
+          required="theme.json header.php"
           fail=0
           for dir in templates/*/; do
             tpl=$(basename "$dir")
@@ -92,7 +105,24 @@ jobs:
               echo "✅ $tpl"
             fi
           done
-          exit $fail
+
+          # 反向检查：非 default 模板里不该再有与 default 逐字节相同的文件
+          # —— 那正是这次去重要消灭的重复；出现说明有人复制过去了。
+          echo ""
+          dup=0
+          for dir in templates/*/; do
+            tpl=$(basename "$dir")
+            [ "$tpl" = "default" ] && continue
+            while IFS= read -r f; do
+              rel="${f#./}"
+              if [ -f "templates/default/$rel" ] && cmp -s "templates/default/$rel" "$rel"; then
+                echo "::error::模板 $tpl 里的 $rel 与 default 完全相同 —— 应删除并回退 default"
+                dup=1
+              fi
+            done < <(find "$dir" -type f -name '*.php')
+          done
+          [ "$dup" -eq 0 ] && echo "✅ 没有与 default 逐字节相同的模板文件"
+          exit $((fail + dup))
 
       - name: 行为测试（零依赖断言）
         run: |

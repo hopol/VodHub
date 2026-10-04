@@ -3,7 +3,7 @@
  * default 模板 - 首页：展示各数据源及其分类
  * 变量：$sources, $sourceId, $siteTitle, $pageTitle
  */
-require_once __DIR__ . '/header.php';
+require tplInclude('header.php', $tplName);
 ?>
 
 <?php if (!$sources): ?>
@@ -58,4 +58,4 @@ require_once __DIR__ . '/header.php';
     <?php endforeach; ?>
 <?php endif; ?>
 
-<?php require_once __DIR__ . '/footer.php'; ?>
+<?php require tplInclude('footer.php', $tplName); ?>

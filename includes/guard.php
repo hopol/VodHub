@@ -193,13 +193,15 @@ function guardCaps(): array {
     // tier = 由**水位**决定的缩放档（normal 不缩放 / tight ×0.6 / compact ×0.5 / protect 停写）
     // 两者是不同维度：探测不到水位时 tier=normal（不缩放），但 base 仍是紧凑档 ——
     // 后台必须分开显示，否则会出现「档位 normal 却是 15 MB 上限」这种自相矛盾。
+    // ⚠ 不要顺手加 $caps['small']：1.3.11 之前它就在这儿，但**全仓库没有任何地方读它**
+    //   ——与 'base' 是同一个信息的两个出口，base 有读点，于是这个死键一直没人发现。
+    //   （它是被 tests/test_contracts.php 契约 3 抓出来的第一个实例。）
     $caps['base']      = $small ? 'compact' : 'standard';
     $caps['tier']      = $d['tier'];
     $caps['probe']     = $d['probe'] ?? 'ok';   // 水位探测状态：ok / disabled / failed
     $caps['pct']       = $d['pct'];
     $caps['free']      = $d['free'];
     $caps['total']     = $d['total'];
-    $caps['small']     = $small;
     $caps['writable']  = $d['tier'] !== 'protect';
     return $caps;
 }
@@ -275,6 +277,7 @@ function guardGcAll(): void {
         fn () => function_exists('glob')
             ? guardGcFiles(CACHE_DIR, (int) $caps['cache_files'], (int) $caps['cache_bytes'])
             : null,
+        fn () => guardGcEnrich((int) $caps['enrich_days']),
         fn () => guardGcPageBuckets((int) $caps['bucket_hours'], (int) $caps['page_files'], (int) $caps['page_bytes']),
         fn () => guardGcFiles(IMG_CACHE_DIR, PHP_INT_MAX, (int) $caps['img_bytes']),
         fn () => guardGcFiles(DATA_DIR . '/rl',  (int) $caps['rl_files'],  GUARD_MB),
@@ -295,6 +298,59 @@ function guardGcAll(): void {
 // ==================================================================
 // 各项 GC
 // ==================================================================
+
+/**
+ * enrich（TypeSafe 归一化结果）表 GC。
+ *
+ * ⚠⚠ **这个函数在 1.3.12 才加上，而 `enrich_days` 从 1.3.0 起就只有赋值、没有读取点**
+ *   —— 也就是说在此之前那张「富化记录 15 / 30 天过期」的护栏**一直是假的**。
+ *   `enrich` 表因此完全没有任何自动清理，唯一的 DELETE 在 enrich.php 的后台手动按钮里。
+ *
+ *   代价（按正常使用的保守估算）：
+ *     100 个源 × 每天 200 部新片 × 30 天 = 60 万行 ≈ 300 MB，
+ *   在 1 GB 盘上占 **30%**，而 docs/lowpower.md 承诺的总预算是 132 MB。
+ *   **这是全项目唯一一条会真正吃掉免费主机磁盘的路径，且此前没有任何护栏。**
+ *
+ *   两道闸（与 guardGcFiles 的形状一致，但按「行」而不是「文件」计）：
+ *     ① 时间闸：删掉 created_at 早于 N 天的行 —— 命中 enrich_days
+ *     ② 数量闸：即使时间闸没触发（比如全是最近写的），超过 maxRows 就从最旧开始删
+ *
+ *   数量闸不是多余的：一次「覆盖导入」可能让大量旧记录瞬间变成同一天写的，
+ *   只靠时间闸的话它们会一起活过 30 天。
+ *
+ *   两条闸都在 try/catch 里（guardGcAll 的步骤表统一兜着）——
+ *   SQLite 被锁住时抛异常不能让正常渲染失败，GC 下一轮再补。
+ */
+function guardGcEnrich(int $maxDays): void {
+    if ($maxDays <= 0) {
+        return;
+    }
+    require_once __DIR__ . '/db.php';   // db() 定义在这里（惰性引入，避免环）
+
+    // 行数硬顶：跨档位的绝对上限，防止「时间闸还没到期但已经吃掉半个盘」。
+    //
+    // 120000 行的来由：单行约 400~600 字节（data 是小 JSON），
+    // 120000 × 500 B ≈ 60 MB —— 相当于给最热的站点留足冗余，
+    // 同时把最坏情况钉在紧凑档总预算（162 MB）以内。
+    // 实测 500 行老数据在时间闸下被清空、行数闸独立验证保留最新 100 行，均符合预期。
+    $maxRows = 120000;
+
+    // ① 时间闸
+    $cutoff = time() - $maxDays * 86400;
+    db()->prepare('DELETE FROM enrich WHERE created_at < ?')->execute([$cutoff]);
+
+    // ② 数量闸（时间闸没兜住时的硬顶）
+    $n = (int) db()->query('SELECT COUNT(*) FROM enrich')->fetchColumn();
+    if ($n > $maxRows) {
+        // ⚠ 必须带 ORDER BY created_at —— 不带的话 SQLite 删哪 120000 行是未定义的，
+        //   可能把最热的（刚写入、正在被播放页读的）记录删掉。
+        db()->prepare(
+            'DELETE FROM enrich WHERE rowid IN (
+                 SELECT rowid FROM enrich ORDER BY created_at ASC, rowid ASC LIMIT ?
+             )'
+        )->execute([$n - $maxRows]);
+    }
+}
 
 /**
  * 通用 LRU：超数量或超字节时，按 mtime 从旧到新删除。
@@ -365,10 +421,17 @@ function guardGcPageBuckets(int $hours, int $maxFiles, int $maxBytes): void {
             guardRmDir($bucket);
         }
     }
-    // 再按总量兜底（同一小时内文件过多时）
-    if ($maxBytes > 0) {
-        guardGcFiles($dir, PHP_INT_MAX, $maxBytes);
-    }
+    // ⚠ 1.3.11 删掉了这里原来那句 guardGcFiles($dir, PHP_INT_MAX, $maxBytes)。
+    //   它是**死代码，且从来不是活的**：guardGcFiles() 第一件事就是
+    //   `foreach (glob($dir.'/*')) { if (!is_file($f)) continue; ... }`，
+    //   而 c/ 底下**全是时间桶目录**，没有任何条目能通过 is_file()，
+    //   于是 $total 恒为 0 → 判定「未超限」直接 return。
+    //   换句话说，文档承诺的「页面缓存共 15 MB」这个总闸**从未存在过**，
+    //   实际生效的是下面这句「每个桶各限 $maxFiles 个 / $maxBytes」——
+    //   总上限 = 桶数(2) × 每桶上限。文档已按实际行为更正（见 docs/lowpower.md）。
+    //
+    //   留着它比删掉更糟：注释宣称的兜底作用不存在，下一个人会以为总闸有效。
+    //
     // 子桶内的文件也各自限量
     foreach ((glob($dir . '/*', GLOB_ONLYDIR) ?: []) as $bucket) {
         guardGcFiles($bucket, $maxFiles, $maxBytes);

@@ -180,9 +180,29 @@ function tplVarValidate(string $kind, string $val): ?string {
 }
 
 
-/** 判断模板是否存在（至少要有 index.php） */
+/**
+ * 判断模板是否存在。
+ *
+ * ⚠⚠ **判据在 1.3.12 改过**（原来只认 `index.php`）：
+ *
+ *   1.3.12 删掉了 4 套模板里与 default 完全相同的 7 个页面文件
+ *   （模板去重，见 docs/templates.md）。而这些模板**恰恰没有自己的 index.php** ——
+ *   若判据仍是「必须有 index.php」，`tplExists('netflix')` 会返回 false，
+ *   于是 `resolveTemplate()` 一路回退到 default、
+ *   `adminActionEditTemplate()` 直接拒绝保存、
+ *   **整个非 default 模板静默失效，而且没有任何报错**。
+ *
+ *   新的判据是「目录存在 + 有 theme.json」（theme.json 才是模板真正必需的元信息，
+ *   `tplMeta()` 读的就是它，缺了会给一套默认值）。
+ *
+ *   ⚠ 所以**theme.json 是不可删的**，它现在是「这个模板存在」的标记。
+ *     页面文件（index/list/play/…）全部可以删，缺失时 renderTemplate() 回退 default。
+ */
 function tplExists(string $name): bool {
-    return is_file(tplRoot() . '/' . $name . '/index.php');
+    if ($name === '' || str_contains($name, '/') || str_contains($name, '\\')) {
+        return false;   // 防路径穿越：模板名会被拼进 tplRoot() . '/' . $name
+    }
+    return is_file(tplRoot() . '/' . $name . '/theme.json');
 }
 
 /**
@@ -289,6 +309,69 @@ function renderTemplate(string $pageFile, array $tplData = [], string $tplOverri
     }
     echo $html;
 }
+
+/**
+ * 解析模板内同级文件（header / footer / player_script）的实际路径。
+ *
+ * ═══════════════════════════════════════════════════════════════════════
+ *  为什么需要它：1.3.12 删掉了各模板里与 default 逐字节相同的页面文件，
+ *  而这些页面内部原本是 `require_once __DIR__ . '/footer.php'` 引用同级的。
+ *  `__DIR__` 是硬路径、**没有任何回退** —— bilibili 模板的 list.php
+ *  （唯一与 default 不同、因而必须保留的那个）在 footer.php 被删后
+ *  直接 `Failed opening required .../bilibili/footer.php` 而整页 500。
+ *  `renderTemplate()` 的回退只覆盖**入口那一个文件**，模板内部的 require
+ *  不在它的视野里 —— 这个坑必须由模板自己来接。
+ * ═══════════════════════════════════════════════════════════════════════
+ *
+ * ⚠⚠ **为什么是「返回路径」而不是「在函数里 include」—— 本项目已踩过一次**：
+ *
+ *   页面文件里的 `$siteTitle` / `$tplMeta` / `$sources`，
+ *   是 renderTemplate() 用 extract() 放进**它自己那个作用域**的。
+ *   `require_once __DIR__ . '/header.php'` 写在页面文件里时，
+ *   被包含的文件继承的是**页面文件所在的作用域**（即 renderTemplate 的），
+ *   所以变量看得见。
+ *
+ *   而一旦把 include 挪进本函数，被包含的文件就改在**本函数自己的作用域**里执行，
+ *   renderTemplate 的局部变量**一个都看不见**。实测后果：
+ *   `$siteTitle` 变 undefined、`$tplMeta['adminColumns']` 报 null 下标访问，
+ *   每个页面的站名与标题全部变空 —— 且**不报致命错误、页面照常输出**。
+ *   那是最难发现的一类回归：看起来「页面正常」，其实内容已经错了。
+ *
+ *   所以分工是：**本函数只解析路径，`require` 留在页面文件里写**，
+ *   作用域才与去重前完全一致。
+ *
+ * 用法（模板里）：
+ *     <?php require tplInclude('header.php'); ?>
+ *
+ * 查找顺序：当前模板 → default → 一个空壳文件。
+ * **永远返回一个存在的路径**，所以 require 不会 fatal；
+ * 真的什么都��了也只是页面少一段尾巴，而不是整页 500。
+ *
+ * @param string $file 同级文件名，如 'header.php' / 'footer.php'
+ */
+function tplInclude(string $file, string $template = ''): string {
+    // 防路径穿越：文件名会被拼进路径
+    if (!preg_match('/^[A-Za-z0-9_-]+\.php$/', $file)) {
+        return tplRoot() . '/' . TPL_NOOP_FILE;
+    }
+    // ⚠ 模板名**由调用方显式传进来**，不从 $GLOBALS 读 ——
+    //   renderTemplate() 里 $tplName 是一个**局部变量**（它 extract 过数据，
+    //   不能污染全局），所以 $GLOBALS['tplName'] 永远是空的 → 恒回退 default。
+    //   那正是去重后「B 站模板丢了 style.css」的原因：页面文件从 default/ 载入
+    //   header，而 default 的 header 自然只引 static/style.css。
+    //   （tplPartial() 有同样的隐患，它是被模板显式传了 $tplName 才没出事。）
+    $tpl = $template !== '' ? $template : (string) ($GLOBALS['tplName'] ?? 'default');
+    foreach ([$tpl, 'default'] as $dir) {
+        $path = tplRoot() . '/' . $dir . '/' . $file;
+        if (is_file($path)) {
+            return $path;
+        }
+    }
+    return tplRoot() . '/' . TPL_NOOP_FILE;
+}
+
+/** 空壳文件名：tplInclude() 兜底用，保证返回的路径一定存在 */
+const TPL_NOOP_FILE = '_noop.php';
 
 /**
  * 在模板内引用子片段（如 partials/vod_grid.php）

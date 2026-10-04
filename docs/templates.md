@@ -42,44 +42,73 @@ VodHub 的模板是**目录即模板**：`templates/<模板名>/` 里放什么�
 
 ```
 templates/
-└── mytheme/
-    ├── theme.json              # 元信息（必需）
-    ├── header.php              # <head> + 顶栏
-    ├── footer.php              # 页脚
-    ├── index.php               # 首页
-    ├── list.php                # 列表页
-    ├── play.php                # 播放页
-    ├── search.php              # 搜索页
-    ├── history.php             # 历史/收藏
-    ├── login.php               # 访问密码页
-    ├── player_script.php       # 播放器 JS 片段
-    ├── style.css               # 模板专属样式
-    └── partials/
-        ├── vod_grid.php        # 卡片网格片段（列表页 / 搜索页）
-        ├── vod_meta.php        # 播放页 · 信息 chips
-        └── vod_side.php        # 播放页 · 侧栏影片信息
+├── default/                    # 全站兜底，页面文件只在这里保留一份
+│   ├── theme.json
+│   ├── header.php  footer.php
+│   ├── index.php   list.php   play.php
+│   ├── search.php  history.php  login.php  player_script.php
+│   └── partials/
+│       ├── vod_grid.php        # 卡片网格片段（列表页 / 搜索页）
+│       ├── vod_meta.php        # 播放页 · 信息 chips
+│       └── vod_side.php        # 播放页 · 侧栏影片信息
+└── mytheme/                    # 一套新模板：通常只有 3~4 个文件
+    ├── theme.json              # 元信息（**必需**，见下方警告）
+    ├── header.php              # <head> + 顶栏 + 搜索框（与 default 的差异在这）
+    └── style.css               # 模板专属样式
 ```
+
+> ⚠ **1.3.12 起，一套新模板通常只需要 `theme.json` + `header.php` + `style.css`。**
+>
+> 页面文件（`index` / `list` / `play` / `search` / `history` / `login` /
+> `footer` / `player_script` 与 `partials/*`）**不必复制** ——
+> 缺失时会自动回退到 `default/`：
+>
+> | 缺什么 | 谁负责回退 |
+> |---|---|
+> | 入口页面文件（index/list/play/…） | `renderTemplate()` |
+> | `partials/*.php` | `tplPartial()` |
+> | 页面**内部**引用的 header/footer/player_script | `tplInclude()` |
+>
+> **这正是 1.3.12 删掉 31 个重复文件（1,552 行）的原因**：
+> 它们与 default 逐字节相同，却让「改一个 bug 要改 5 处」——
+> 而过去 8 天里那类「改了 A 忘了 B」的事故已经发生 4 次。
+>
+> ⚠⚠ **`theme.json` 现在不可删。**
+> `tplExists()`（判断「这套模板存不存在」）的判据在 1.3.12 从
+> 「有没有 `index.php`」改成了「有没有 `theme.json`」——
+> 因为去重删掉了非 default 模板的 `index.php`。
+> **删掉 theme.json 的后果是整套模板静默失效、且不报任何错**：
+> `resolveTemplate()` 一路回退 default、模板编辑器直接拒绝保存。
 
 ---
 
 ## 必备文件清单
 
-CI 会检查下面这些文件，缺一个就挂：
+**新模板只有 3 个文件是必需的**，CI 缺一个就挂：
 
-| 文件 | 作用 |
-|------|------|
-| `theme.json` | 模板名、说明、封面模式、列数 |
-| `header.php` | HTML 头 + 顶栏 + 源切换标签 |
-| `footer.php` | 页脚 |
-| `index.php` | 首页（按源分区块列分类） |
-| `list.php` | 分类列表 + 分页 |
-| `play.php` | 播放器 + 选集 + 简介 |
-| `search.php` | 搜索结果 |
-| `history.php` | 播放历史与收藏 |
-| `login.php` | 访问密码输入页 |
-| `player_script.php` | 播放器初始化脚本 |
-| `style.css` | 样式 |
-| `partials/vod_grid.php` | 卡片网格（列表页复用） |
+| 文件 | 作用 | 必需？ |
+|------|------|:---:|
+| `theme.json` | 模板名、说明、封面模式、列数。**同时是「这套模板存在」的标记** | ✅ |
+| `header.php` | HTML 头 + 顶栏 + 源切换标签 + 搜索框 | ✅ |
+| `style.css` | 模板专属样式（`default` 除外，它复用 `static/style.css`） | ✅ |
+| `footer.php` | 页脚 | ❌ 回退 default |
+| `index.php` | 首页（按源分区块列分类） | ❌ 回退 default |
+| `list.php` | 分类列表 + 分页 | ❌ 回退 default |
+| `play.php` | 播放器 + 选集 + 简介 | ❌ 回退 default |
+| `search.php` | 搜索结果 | ❌ 回退 default |
+| `history.php` | 播放历史与收藏 | ❌ 回退 default |
+| `login.php` | 访问密码输入页 | ❌ 回退 default |
+| `player_script.php` | 播放器初始化脚本 | ❌ 回退 default |
+| `partials/vod_grid.php` | 卡片网格（列表页复用） | ❌ 回退 default |
+| `partials/vod_meta.php` | 播放页信息 chips | ❌ 回退 default |
+| `partials/vod_side.php` | 播放页侧栏 | ❌ 回退 default |
+
+**只有当你要改的页面与 default 不同时，才需要自带副本。**
+现有 5 套模板里只有 `bilibili` 有两个：`list.php` 与 `partials/vod_grid.php`。
+
+> CI 还有一条**反向检查**：非 default 模板里若出现与 default **逐字节相同**的
+> `.php` 文件，会直接判失败 —— 那正是这次要消灭的重复。
+> 确实需要不同内容的，先改内容；改完还相同就说明它本该删掉。
 
 ---
 
@@ -400,4 +429,6 @@ sed -i 's/var(--\([a-z-]*\)/var(--my-\1/g' templates/mytheme/style.css
 
 ### 新模板在后台不出现
 
-确认 `templates/mytheme/index.php` 存在 —— `tplExists()` 是靠**这个文件**判断模板是否有效的，没有它整套模板会被忽略。
+确认 `templates/mytheme/theme.json` 存在 —— `tplExists()` 是靠**这个文件**判断模板是否有效的
+（1.3.12 起判据从 `index.php` 改成了 `theme.json`，因为页面文件已可回退 default，
+去重后非 default 模板不再有 `index.php`）。没有它整套模板会被忽略。

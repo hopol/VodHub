@@ -63,6 +63,12 @@
 
 require_once __DIR__ . '/bootstrap.php';
 
+// 契约 2 要读 $_ADMIN_ACTION_MAP（定义在 admin-actions.php 的顶层全局作用域）。
+// ⚠ 加载它 = 把 client.php / template.php / enrich.php / config-io.php 一并引入，
+//   但**不会执行任何 action**（那些只在 adminHandlePost() 里被调用）——
+//   所以这里没有出站请求、没有写库，可以在站点上安全跑。
+require_once __DIR__ . '/../includes/admin-actions.php';
+
 $root = dirname(__DIR__);
 
 // ==================================================================
@@ -148,6 +154,27 @@ function t_contract_invalidates(string $body): bool {
     // 两种都算：pcClear() 直接清；pcClearBatch() 表示「这段里的清延迟到最外层统一做」，
     // 批量导入必须用它，否则一次导入会触发几十次全量扫描。
     return (bool) preg_match('/\bpcClear(?:Batch)?\s*\(/', $body);
+}
+
+/**
+ * 两个文件是否逐字节相同。
+ *
+ * ⚠ 不用 cmp()：它可能落在免费主机的 disable_functions 里，
+ *   而测试工具应该比它测的代码更耐用（本项目栽过 shell_exec / getenv 两次）。
+ * 也不用 md5_file()：大文件上白读一遍内存，模板文件虽小但这个习惯不好。
+ */
+function t_contract_same(string $a, string $b): bool {
+    if (!is_file($a) || !is_file($b)) {
+        return false;
+    }
+    $sa = @filesize($a);
+    $sb = @filesize($b);
+    if ($sa === false || $sb === false || $sa !== $sb) {
+        return false;   // 大小不同就一定不同（先便宜后昂贵）
+    }
+    $ha = @hash_file('sha256', $a);
+    $hb = @hash_file('sha256', $b);
+    return $ha !== false && $hb !== false && hash_equals($ha, $hb);
 }
 
 /** 需要扫描的业务代码文件（入口页 + includes/） */
@@ -361,6 +388,542 @@ t('pcClearBatch 的 finally 里真的调了 pcClearNow（批量路径不能只�
         preg_match('/finally\s*\{[^}]*pcClearNow\s*\(/s', $body),
         'finally 分支里必须真的调用 pcClearNow()'
     );
+});
+
+
+// ══════════════════════════════════════════════════════════════════════
+// 契约 2：新增的 admin action 必须「已登记为会失效」或「显式声明只读」
+// ══════════════════════════════════════════════════════════════════════
+//
+//  契约 1 守住了「写 sources/groups 的函数必须失效」，
+//  但它**看不见**「新增了一个 action，写的是别的东西」——
+//  比如给后台加一个「一键改全站排序」的按钮，走的是别的表，
+//  契约 1 一路绿灯，而前台照样不更新。
+//
+//  契约 2 换个角度：不是去找写操作，而是要求**每个 action 都必须表态**。
+//  新增 action 时只有两种合法结局：
+//    ① 它会改变前台 → 必须在失效登记名单里（ADMIN_INVALIDATING_ACTIONS）；
+//    ② 它只读不改 → 必须进只读白名单（ADMIN_READONLY_ACTIONS）并写明理由。
+//  **「忘了登记」不再是可能的状态** —— 新 action 必然落进其中一张表，
+//  因为两张表的并集必须等于映射表的键集。
+//
+//  这个设计的关键：判据是「**集合相等**」而不是「逐个检查」，
+//  所以新增 action 无论写什么，测试都会立刻变红要求表态。
+
+group('契约 2：admin action 必须登记为「会失效」或「只读」');
+
+/** 会改变前台展示的 action（直接写库，且写路径自带失效）。 */
+const ADMIN_INVALIDATING_ACTIONS = [
+    // —— 数据源 / 分组（契约 1 保证其写入函数自带 pcClear）——
+    'add_source', 'update_source', 'delete_source', 'toggle_source',
+    'add_group', 'update_group', 'delete_group',
+    // 改的是图片域名白名单，裸 SQL，自行作废
+    'detect_img_host',
+    // —— 走 setSetting()，pcClear() 挂在它上面 ——
+    'site_settings', 'site_template', 'edit_template', 'reset_template',
+    'access_settings', 'change_admin_password',
+    // 手动清理：勾了「页面静态缓存」就自己清了
+    'clear_cache',
+    // 导入走 pcClearBatch()，退出时统一清
+    'import_config',
+];
+
+/**
+ * 只读 action（不写任何库，所以不必失效）。
+ *
+ * ⚠ **必须写理由**。留空理由的白名单等于「随便声明一下就能免检」，
+ *   那这张表会变成绕过契约的后门 —— 而这正是本契约要防的东西。
+ */
+const ADMIN_READONLY_ACTIONS = [
+    // 探活：出站打一次上游看通不通，不碰任何表
+    'test_source' => '只做上游连通性探测（VodClient::probe()），不写任何表',
+];
+
+t('映射表里每个 action 都已在「会失效」或「只读」两张表中登记', static function (): void {
+    global $_ADMIN_ACTION_MAP;
+    // ⚠ 列表式 const 的 array_keys() 返回的是**下标**（0,1,2…）不是值。
+    //   这里直接用数组本身比对 —— 上一版写成 array_keys() 时，
+    //   16 个 action 全被误判成「未登记」，而 test_source 恰好因为
+    //   是关联式（键=action 名）才通过。**两个用例行为不一致本身就是信号。**
+    $registered = array_merge(
+        array_values(ADMIN_INVALIDATING_ACTIONS),
+        array_keys(ADMIN_READONLY_ACTIONS)
+    );
+    $missing = [];
+    foreach (array_keys($_ADMIN_ACTION_MAP) as $action) {
+        if (!in_array($action, $registered, true)) {
+            $missing[] = $action;
+        }
+    }
+    eq([], $missing,
+        "这些 action 既不在 ADMIN_INVALIDATING_ACTIONS，也不在 ADMIN_READONLY_ACTIONS：\n  "
+        . implode("\n  ", $missing)
+        . '\n\n新增后台 action 时必须表态：会改前台的进前者，只读的进后者（并写明理由）。'
+        . '「忘了登记」不该是一个可能的状态 —— 否则契约 1 看不见它。'
+    );
+});
+
+t('两张表里没有映射表已不存在的 action（防止预授权长期免检）', static function (): void {
+    global $_ADMIN_ACTION_MAP;
+    $stale = [];
+    foreach (array_merge(
+        array_values(ADMIN_INVALIDATING_ACTIONS),   // 列表式：取值，不是 array_keys
+        array_keys(ADMIN_READONLY_ACTIONS)         // 关联式：键就是 action 名
+    ) as $action) {
+        if (!isset($_ADMIN_ACTION_MAP[$action])) {
+            $stale[] = $action;
+        }
+    }
+    eq([], $stale,
+        '这些 action 在 $_ADMIN_ACTION_MAP 里已经不存在了，请删掉登记 —— '
+        . '否则将来有人新增同名 action 时会直接继承免检');
+});
+
+t('一个 action 不能同时出现在两张表里', static function (): void {
+    $both = array_values(array_intersect(
+        array_values(ADMIN_INVALIDATING_ACTIONS),
+        array_keys(ADMIN_READONLY_ACTIONS)
+    ));
+    eq([], $both,
+        '同一个 action 既是「会失效」又是「只读」 —— 说明登记时没想清楚。'
+        . '只读必须真的只读：处理函数里出现 setSetting / pcClear / 任何 CRUD 调用就是违规。');
+});
+
+t('只读 action 的处理函数确实不写任何库（白名单不是免死金牌）', static function (): void {
+    // 这一条堵住「先声明只读、后来加了写入」的漏洞 ——
+    // 那样声明会静默失效，而白名单仍然让它免检。
+    $writers = [
+        'setSetting', 'pcClear', 'addSource', 'updateSource', 'deleteSource',
+        'addGroup', 'updateGroup', 'deleteGroup', 'learnImgHost', 'configImport',
+    ];
+    $dirty = [];
+    foreach (array_keys(ADMIN_READONLY_ACTIONS) as $action) {
+        $fn = 'adminAction' . str_replace(' ', '', ucwords(str_replace('_', ' ', $action)));
+        $body = t_contract_body(
+            t_contract_code((string) file_get_contents(dirname(__DIR__) . '/includes/admin-actions.php')),
+            $fn
+        );
+        if ($body === null) {
+            $dirty[] = "{$action}：找不到 {$fn}()";
+            continue;
+        }
+        foreach ($writers as $w) {
+            if (preg_match('/' . $w . '\s*\(/', $body)) {
+                $dirty[] = "{$action}：{$fn}() 里出现了 {$w}()，它已经不是只读了";
+            }
+        }
+    }
+    eq([], $dirty,
+        "只读白名单里的 action 其实会写库：\n  " . implode("\n  ", $dirty)
+        . '\n\n要么改回只读，要么移进 ADMIN_INVALIDATING_ACTIONS —— '
+        . '不能因为「当初声明过只读」就永远免检。'
+    );
+});
+
+t('只读白名单每条都写明了理由（防止「声明一下」变成后门）', static function (): void {
+    $noReason = [];
+    foreach (ADMIN_READONLY_ACTIONS as $action => $why) {
+        if (trim((string) $why) === '') {
+            $noReason[] = $action;
+        }
+    }
+    eq([], $noReason,
+        '这些只读 action 没写理由。白名单必须说明「为什么不影响前台」，'
+        . '否则将来没人敢删它 —— 一张没人敢动的表就等于没有契约。');
+});
+
+t('会失效名单里的 action，处理函数确实能到达失效路径', static function () use ($root): void {
+    // 静态可达性：处理函数里必须直接调用到「自带失效」的写函数之一
+    //（不递归追一层，因为 pcClearBatch → addSource → pcClear 是三跳，
+    //  那样跟就等于把整个调用图重建一遍，判据会脆得没法维护）。
+    $reaching = [
+        'setSetting',        // 末尾挂 pcClear()
+        'pcClear',           // 直接清
+        'addSource', 'updateSource', 'deleteSource',
+        'addGroup', 'updateGroup', 'deleteGroup',
+        'learnImgHost',      // 裸 SQL + 自行 pcClear
+        'configImport',      // pcClearBatch 包裹
+        'clearSystemCache',  // 勾了页面缓存就自己清
+    ];
+    $unreached = [];
+    $code = t_contract_code((string) file_get_contents($root . '/includes/admin-actions.php'));
+    foreach (ADMIN_INVALIDATING_ACTIONS as $action) {
+        $fn = 'adminAction' . str_replace(' ', '', ucwords(str_replace('_', ' ', $action)));
+        $body = t_contract_body($code, $fn);
+        if ($body === null) {
+            $unreached[] = "{$action}：找不到 {$fn}()";
+            continue;
+        }
+        $hit = false;
+        foreach ($reaching as $r) {
+            if (preg_match('/\b' . $r . '\s*\(/', $body)) {
+                $hit = true;
+                break;
+            }
+        }
+        if (!$hit) {
+            $unreached[] = "{$action}：{$fn}() 里找不到任何失效路径";
+        }
+    }
+    eq([], $unreached,
+        "登记为「会失效」但处理函数到不了失效路径：\n  " . implode("\n  ", $unreached)
+        . '\n\n它要么其实不失效（那就该进只读表），要么走了一条没有接上的写入路径。'
+    );
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// 契约 3：guardCaps() 里定义的每个上限，都必须有地方真的用它
+// ══════════════════════════════════════════════════════════════════════
+//
+//  **这一条当场抓出了两个真实缺陷**，是本契约存在的理由：
+//
+//    ① `enrich_days`（紧凑 15 天 / 标准 30 天）**只有赋值、没有任何读取点**。
+//       结果是 `enrich` 表**完全没有自动清理** ——
+//       唯一的 DELETE 在 enrich.php，只能由后台手动触发。
+//       按 100 源 × 每天 200 部新片 × 30 天 = 60 万行 ≈ 300 MB，
+//       在 1 GB 盘上占三成，而文档承诺的总预算是 132 MB。
+//
+//    ② `small` 键同样只写不读（它与 `base` 是同一个信息的两个出口，
+//       `base` 有读点所以没人发现 `small` 是死的）。
+//
+//  这类缺陷的共同形状：**「定义了上限但忘了用」**。
+//  它不会让任何测试变红，因为**没有任何函数的行为依赖它** ——
+//  这正是它能活这么久的原因，也是契约测试唯一能覆盖的那一类。
+//
+//  修法（本版一并修掉，否则本契约上线即红）：
+//    ① 给 enrich 表加 GC（按天 + 按行数双闸）与 created_at 索引（schema v6）；
+//    ② 删掉死的 `small` 键，或让它被真的读取。
+
+group('契约 3：定义了的容量上限必须真的被用上');
+
+t('guardCaps() 里每个键都有至少一个读取点', static function () use ($root): void {
+    // 只扫「除 guardCaps() 自己以外」的代码 ——
+    // 定义处当然算读点，不排除的话这条契约永远是绿的。
+    $src   = t_contract_code((string) file_get_contents($root . '/includes/guard.php'));
+    $body  = t_contract_body($src, 'guardCaps');
+    ok($body !== null, '应能找到 guardCaps()');
+
+    // ---- 抽出它定义的全部键 ----
+    //
+    // ⚠ 只认两种形态，且**必须排除档位名**：
+    //   ① 字面量数组里的键：'cache_files' => 600,
+    //   ② 后面对 $caps[...] 的赋值：$caps['log_bytes'] = ...
+    //   上一版把 `=> \d+` 写得太宽，把 $factor 那张档位表里的
+    //   normal/tight/compact/protect 也当成键了 —— 它们不是上限，是水位档名。
+    //
+    $bodyStr = (string) $body;
+    preg_match_all("/'([a-z_]+)'\s*=>\s*-?\d+(?![.\w])/", $bodyStr, $m1);
+    preg_match_all('/\$caps\[\s*[\'"]([a-z_]+)[\'"]\s*\]\s*=/i', $bodyStr, $m2);
+    $keys = array_values(array_unique(array_merge($m1[1], $m2[1])));
+    sort($keys);
+    ok(
+        count($keys) >= 15,
+        '解析出 ' . count($keys) . ' 个键（应至少 15 个），判据本身可能失效'
+    );
+    // 档位名不该出现在键集合里 —— 它们是 $factor 表的值，不是 caps 的键
+    foreach (['normal', 'tight', 'compact', 'protect'] as $tierName) {
+        ok(
+            !in_array($tierName, $keys, true),
+            "把水位档名「{$tierName}」误认成了容量上限 —— 判据把 $factor 表也扫进来了"
+        );
+    }
+
+    // ---- 全仓库其它代码（排除 guardCaps() 自身的函数体）----
+    $others = '';
+    foreach (t_contract_files($root) as $file) {
+        if (basename($file) === 'guard.php') {
+            $others .= str_replace($bodyStr, '', $src);
+            continue;
+        }
+        $others .= t_contract_code((string) file_get_contents($file));
+    }
+
+    // ---- 逐键找读取点 ----
+    //
+    // 读取形态只有一种：$caps['k'] 或 $lp['caps']['k']（后台把它传进模板变量 $lp）。
+    // 两者都是「下标取值」，所以判据就是**有没有出现这个下标**。
+    // ⚠ 不能用「字符串 k 在文件里出现过」来判 —— 注释与文档里提到键名不算读取。
+    $dead = [];
+    $live = [];
+    foreach ($keys as $k) {
+        $q     = preg_quote($k, '/');
+        $found = preg_match_all(
+            "/\[['\"]" . $q . "['\"]\]/",
+            $others
+        );
+        if ($found > 0) {
+            $live[] = $k;
+        } else {
+            $dead[] = $k;
+        }
+    }
+
+    eq([], $dead,
+        "guardCaps() 定义了这些上限，但全仓库**没有任何地方读取它们**：\n  " . implode("\n  ", $dead)
+        . "\n\n已确认有读取点的：" . implode('、', $live)
+        . "\n\n一个只写不读的上限等于没有上限 —— 上层以为有护栏，实际没有。"
+        . "\n这正是 enrich 表能长到 300 MB 的原因（enrich_days 从未被读取，"
+        . "\nenrich 表因此一直没有自动清理）。\n"
+        . "处理方式：要么给它接上真实的读取点，要么把这个键删掉（别留一个假护栏）。"
+    );
+});
+
+t('enrich 表有自动清理（enrich_days 必须真的被用上）', static function () use ($root): void {
+    $gc = t_contract_code((string) file_get_contents($root . '/includes/guard.php'));
+    ok(
+        preg_match('/\[[\'"]enrich_days[\'"]\]/', $gc)
+            && preg_match('/function\s+guardGcEnrich\b/', $gc),
+        'enrich_days 必须被 guardGcAll() 的某一步真的用上 —— '
+        . '1.3.11 之前它只有赋值没有读取点，enrich 表因此完全无自动清理，'
+        . '正常用能涨到约 300 MB（1 GB 盘的 30%）'
+    );
+    // GC 还得真的挂在 guardGcAll() 的步骤表里，否则定义了函数也等于没跑
+    $all = t_contract_body($gc, 'guardGcAll');
+    ok($all !== null, '应能找到 guardGcAll()');
+    ok(
+        str_contains((string) $all, 'guardGcEnrich('),
+        'guardGcEnrich() 必须出现在 guardGcAll() 的步骤表里 —— '
+        . '定义了却不调用，等于没有这条清理规则'
+    );
+});
+
+t('enrich 表按 created_at 建了索引（否则按时间删除是全表扫描）', static function () use ($root): void {
+    $db = t_contract_code((string) file_get_contents($root . '/includes/db.php'));
+    ok(
+        preg_match('/idx_enrich_created/', $db),
+        'enrich 表需要 CREATE INDEX idx_enrich_created ON enrich(created_at) —— '
+        . '读取路径（点查 + IN）靠主键已经够了，但按时间删除没有索引就是全表扫描。'
+        . '这个索引随 DB_SCHEMA_VERSION 6 的迁移一起建。'
+    );
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// 契约 4：文档里的承诺必须能在代码里找到对应的东西
+// ══════════════════════════════════════════════════════════════════════
+//
+//  这一条防的是 1.3.10 复查里最刺眼的一处：
+//  `docs/lowpower.md` 写着「（正常情况下任意配置写入都会自动全量作废）」——
+//  而「改数据源」那一半从来不会。**这句话是错的，且它恰好是站长唯一会去查的地方。**
+//
+//  难处在于「数字」不是一概都能对上：
+//    · 文档写「约 132 MB」，代码里是 4 个分项相加 —— 要人算；
+//    · 文档写「约 600 张」，是按平均图片大小估的 —— 代码里根本没有这个数；
+//    · 文档写「≥ 5 GB」，代码是 guardIsSmall() 里的 1.5 GB 阈值。
+//  所以本契约不试图「核对每个数字」，而是抓**一个更窄但更致命**的子类：
+//  **文档承诺「会自动做某事」，代码里必须真有那条自动路径。**
+//
+//  这一类是可以判死的：文档句子里出现「自动 / 无需配置 / 不用手动」这类词时，
+//  它断言的必然是代码里某条自动机制存在。这类断言错了 = 用户照文档行事却等不到结果。
+
+group('契约 4：文档的「自动生效」类承诺必须有真实代码路径');
+
+/** 文档承诺 → 代码里必须存在的标记（判据刻意做窄，只抓「会自动做某事」这一类） */
+const DOC_AUTO_CLAIMS = [
+    // 承诺                          文档位置          代码里必须有的标记
+    ['任意配置写入自动全量作废',     'docs/lowpower.md', 'pcClear('],
+    ['访问密码开启自动停用静态化',   'docs/lowpower.md', 'pcSyncGate('],
+    ['磁盘水位自动收紧各目录上限',   'docs/lowpower.md', 'guardGcAll('],
+    ['切换版本自动作废旧静态页',     'docs/lowpower.md', 'pcVersionGate('],
+    ['数据源分组变更自动作废缓存',   'docs/lowpower.md', 'pcClearBatch('],
+];
+
+t('文档里「自动生效」的每条承诺，代码里都有对应实现', static function () use ($root): void {
+    $code = '';
+    foreach (t_contract_files($root) as $file) {
+        $code .= t_contract_code((string) file_get_contents($file));
+    }
+    $unbacked = [];
+    foreach (DOC_AUTO_CLAIMS as [$claim, $doc, $marker]) {
+        if (!str_contains($code, $marker)) {
+            $unbacked[] = "{$claim}（{$doc} 声称自动，但代码里找不到 {$marker}）";
+        }
+    }
+    eq([], $unbacked,
+        "文档声称会自动生效，但代码里没有对应实现：\n  " . implode("\n  ", $unbacked)
+        . "\n\n这种错比 bug 更贵 —— 用户会照着文档行事，然后等一个永远不会发生的结果。"
+    );
+});
+
+t('lowpower.md 的缓存上限说法与代码一致（不再是「一个数」而是「每桶乘桶数」）', static function () use ($root): void {
+    // 1.3.10 查出：guardGcPageBuckets() 里那句 guardGcFiles($dir, PHP_INT_MAX, $maxBytes)
+    // 是死代码 —— c/ 底下全是桶目录，没有一个条目能通过 is_file()，
+    // 于是 $total 恒为 0，判定「未超限」直接返回，**它从未生效过**。
+    // 实际上限是「桶数 × 每桶上限」，与文档承诺的单一 15 MB 对不上。
+    $doc = t_contract_code((string) file_get_contents($root . '/docs/lowpower.md'));
+    ok(
+        str_contains($doc, '每桶') || str_contains($doc, '桶数'),
+        'docs/lowpower.md 必须说明页面缓存的上限是「每桶 / 乘以桶数」，'
+        . '而不是单一的那个总字节数 —— 后者与实际行为对不上'
+    );
+
+    $gc   = t_contract_code((string) file_get_contents($root . '/includes/guard.php'));
+    $body = t_contract_body($gc, 'guardGcPageBuckets');
+    ok($body !== null, '应能找到 guardGcPageBuckets()');
+    ok(
+        !preg_match('/guardGcFiles\(\$dir\s*,\s*PHP_INT_MAX/', (string) $body),
+        'guardGcPageBuckets() 里那句对 c/ 顶层调 guardGcFiles() 的是死代码'
+        . '（c/ 下全是目录，is_file() 一条都过不了，$total 恒为 0）—— 请删掉，'
+        . '别让下一个人以为它在工作'
+    );
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// 契约 5：模板去重的结构约束（1.3.12 删掉 31 个重复文件之后立的）
+// ══════════════════════════════════════════════════════════════════════
+//
+//  1.3.12 删掉了各模板里与 default **逐字节相同**的页面文件与 partials，
+//  缺失时由 renderTemplate() / tplPartial() / tplInclude() 回退到 default。
+//
+//  但这个回退是**三处不同机制**拼出来的，任何一处漏掉都表现为
+//  「某个模板的某个页面 500 或内容悄悄变空」，而不是「编译期报错」：
+//    ① renderTemplate()  回退**入口**页面文件
+//    ② tplPartial()      回退 partials/*.php
+//    ③ tplInclude()      回退页面**内部** require 的 header/footer/player_script
+//
+//  ③ 是 1.3.12 才有的 —— 因为页面文件内部原本写的是
+//  `require_once __DIR__ . '/footer.php'`，`__DIR__` 是硬路径、**零回退**，
+//  footer.php 被删后 bilibili 的 list.php 直接整页 500。
+//  这个坑实测踩过，注释写在 includes/template.php 的 tplInclude() 里。
+//
+//  所以契约 5 盯三件事：必需文件还在 / 没有重新长出重复 / tplInclude 的判据没退化。
+
+group('契约 5：模板去重的结构约束');
+
+/** 每套模板必须有、且**不允许**被删的文件 */
+const TPL_MUST_HAVE = ['theme.json', 'header.php'];
+
+/** 允许各模板与 default 不同、因而必须自带副本的文件 */
+const TPL_MAY_DIFFER = ['bilibili' => ['list.php', 'partials/vod_grid.php']];
+
+t('每套模板仍带着 theme.json 与 header.php（缺任何一个模板就废了）', static function () use ($root): void {
+    $bad = [];
+    foreach (array_keys(listTemplates()) as $tpl) {
+        foreach (TPL_MUST_HAVE as $f) {
+            if (!is_file(tplRoot() . '/' . $tpl . '/' . $f)) {
+                $bad[] = "{$tpl}/{$f}";
+            }
+        }
+    }
+    eq([], $bad,
+        "这些模板缺少必需文件：\n  " . implode("\n  ", $bad)
+        . "\n\ntheme.json 现在是「这个模板存在」的标记（tplExists() 判据已改成查它）——"
+        . "\nheader.php 则是每套主题的配色与搜索框差异所在。"
+        . "\n\n⚠ 特别注意 theme.json：**删了它，整套模板会静默失效且不报错**"
+        . "（resolveTemplate() 回退 default、模板编辑器拒绝保存）。"
+    );
+});
+
+t('没有模板重新长出与 default 逐字节相同的文件（那正是要消灭的重复）', static function () use ($root): void {
+    // 反向检查：CI 也有这一步，但契约测试在 Web 上也能跑 —— 站长自查用得上
+    $dup = [];
+    foreach (array_keys(listTemplates()) as $tpl) {
+        if ($tpl === 'default') {
+            continue;
+        }
+        foreach (glob(tplRoot() . '/' . $tpl . '/*.php') ?: [] as $f) {
+            $rel = basename($f);
+            if ($rel === 'header.php' || $rel === 'theme.json') {
+                continue;   // 这两个本就允许不同
+            }
+            if (!isset(TPL_MAY_DIFFER[$tpl]) || !in_array($rel, TPL_MAY_DIFFER[$tpl], true)) {
+                if (is_file(tplRoot() . '/default/' . $rel) && t_contract_same($f, tplRoot() . '/default/' . $rel)) {
+                    $dup[] = "{$tpl}/{$rel}";
+                }
+            }
+        }
+        foreach (glob(tplRoot() . '/' . $tpl . '/partials/*.php') ?: [] as $f) {
+            $rel = 'partials/' . basename($f);
+            if (!isset(TPL_MAY_DIFFER[$tpl]) || !in_array($rel, TPL_MAY_DIFFER[$tpl], true)) {
+                if (is_file(tplRoot() . '/default/' . $rel) && t_contract_same($f, tplRoot() . '/default/' . $rel)) {
+                    $dup[] = "{$tpl}/{$rel}";
+                }
+            }
+        }
+    }
+    eq([], $dup,
+        "这些文件与 default 逐字节相同，应删掉并回退 default：\n  " . implode("\n  ", $dup)
+        . "\n\n留着它们 = 把「改一个 bug 要改 5 处」这个坑又挖回来。"
+        . "\n确实需要不同内容的，请登记进 TPL_MAY_DIFFER 并写明原因。");
+});
+
+t('t_contract_same() 真能分辨内容差异（上面的判据本身要可信）', static function (): void {
+    // 反证：造几个内容不同的临时文件，确认判据分辨得出来。
+    // 不然「没有重复」这个结论可能只是判据恒返回 true。
+    // ⚠ 刻意**不用 cmp()**：它属于可能在 disable_functions 里的函数，
+    //   本项目的测试工具应该比它测试的代码更耐用（同 shell_exec / getenv 的教训）。
+    $a = tempnam(sys_get_temp_dir(), 'vh');
+    $b = tempnam(sys_get_temp_dir(), 'vh');
+    file_put_contents($a, 'x');
+    file_put_contents($b, 'y');
+    ok(t_contract_same($a, $b) === false, '内容不同时必须判为「不同」—— 否则「无重复」是假结论');
+    file_put_contents($b, 'x');
+    ok(t_contract_same($a, $b) === true, '内容相同时必须判为「相同」');
+    ok(t_contract_same($a, $a) === true, '同一文件与自己必然相同');
+    @unlink($a);
+    @unlink($b);
+});
+
+t('tplExists() 认的是 theme.json，不是 index.php（改回去模板会静默全废）', static function (): void {
+    // 这条锁的是 1.3.12 最危险的一处改动：
+    // 去重删掉了非 default 模板的 index.php，而 tplExists() 原来只认 index.php。
+    // 若有人「顺手改回去」，resolveTemplate() 会一路回退 default、
+    // 模板编辑器直接拒绝保存 —— **整个非 default 模板静默失效，零报错**。
+    ok(tplExists('default'), 'default 模板应存在');
+    ok(tplExists('bilibili'), 'bilibili 模板应存在（它已没有 index.php 了）');
+    ok(tplExists('netflix'), 'netflix 模板应存在');
+    ok(!tplExists('no-such-template'), '不存在的模板必须返回 false');
+    ok(!tplExists('../etc'), 'tplExists 必须挡住路径穿越');
+});
+
+t('模板页面内部不再用 __DIR__ 硬路径 require 同级文件（那个零回退）', static function () use ($root): void {
+    // __DIR__ . '/footer.php' 在 footer.php 被删后是整页 500，
+    // 而且**只有 bilibili/list.php 会触发**（其余模板的该文件已删）——
+    // 也就是说：一旦有人把 bilibili/list.php 复制回 5 份，就静默恢复了这个雷。
+    $bad = [];
+    foreach (glob(tplRoot() . '/*/*.php') ?: [] as $f) {
+        $src = t_contract_code((string) file_get_contents($f));
+        if (preg_match('/require(?:_once)?\s+__DIR__/', $src)) {
+            $bad[] = basename(dirname($f)) . '/' . basename($f);
+        }
+    }
+    eq([], $bad,
+        "这些模板还在用 __DIR__ 硬路径引用同级文件：\n  " . implode("\n  ", $bad)
+        . "\n\n请改用 tplInclude('footer.php', $tplName) —— 它有 default 回退，"
+        . "\n且 require 留在页面文件里（作用域与去重前完全一致）。"
+        . "\n⚠ 这条坑实测踩过：footer.php 被删后 bilibili 的 list.php 直接 500。");
+});
+
+t('非 default 模板的页面文件确实都已删除（说明回退在真的被使用）', static function () use ($root): void {
+    // 反向断言：如果哪天又长回来了，本条会提醒你把 TPL_MAY_DIFFER 之外的清掉。
+    // 它不是「必须删」，而是「别悄悄长回来」—— 长回来不会立刻出错，
+    // 但会让「改 5 处」的问题重新长回来，而那正是本版要消灭的。
+    $kept = [];
+    foreach (array_keys(listTemplates()) as $tpl) {
+        if ($tpl === 'default') {
+            continue;
+        }
+        foreach (['index.php', 'play.php', 'search.php', 'history.php',
+                  'login.php', 'footer.php', 'player_script.php'] as $rel) {
+            $mayDiffer = isset(TPL_MAY_DIFFER[$tpl]) && in_array($rel, TPL_MAY_DIFFER[$tpl], true);
+            if (!$mayDiffer && is_file(tplRoot() . '/' . $tpl . '/' . $rel)) {
+                $kept[] = "{$tpl}/{$rel}";
+            }
+        }
+    }
+    eq([], $kept,
+        "这些页面又出现在非 default 模板里了：\n  " . implode("\n  ", $kept)
+        . "\n\n如果它们与 default 完全相同，应该删掉（回退已就位）；"
+        . "\n如果确实需要不同内容，请登记进 TPL_MAY_DIFFER 并写明原因。");
+});
+
+t('tplInclude() 在两个模板都缺文件时返回空壳而不是 false', static function () use ($root): void {
+    // require 一个不存在的路径 = 致命错误 = 整页 500。
+    // tplInclude() 的兜底必须是「一个一定存在的文件」。
+    $p = tplInclude('definitely-not-here.php', 'netflix');
+    ok(is_string($p) && $p !== '', '应返回一个路径字符串');
+    ok(is_file($p), '返回的路径必须真实存在 —— 否则 require 它就是致命错误');
+    // 恶意文件名也必须落到空壳
+    ok(is_file(tplInclude('../../config.php', 'netflix')), '路径穿越尝试必须落到空壳');
 });
 
 // ==================================================================

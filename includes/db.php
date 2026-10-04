@@ -10,7 +10,7 @@ require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/pagecache.php';
 
 /** 目标 schema 版本。dbInit() 用它判断「是否已经完整初始化」。 */
-const DB_SCHEMA_VERSION = 5;
+const DB_SCHEMA_VERSION = 6;
 
 /** 获取数据库连接（单例，自动建表） */
 function db(): PDO {
@@ -127,6 +127,19 @@ function dbInit(PDO $pdo): void {
             PRIMARY KEY (source_id, vod_id)
         )');
         setSetting('schema_version', '5');
+    }
+
+    // v6：enrich 表加 created_at 索引
+    //
+    // 读取路径（点查 + IN 批量）靠 `PRIMARY KEY (source_id, vod_id)` 已经够了，
+    // 但 1.3.12 要新增的 guardGcEnrich() 要按时间删 —— 没有索引就是**全表扫描**，
+    // 而 GC 是每次渲染都可能跑到的路径，在共享 CPU 上不能这么花。
+    //
+    // ⚠ 建索引用 IF NOT EXISTS：SQLite 不支持 `CREATE INDEX IF NOT EXISTS` 之外的
+    //   重复创建，且迁移可能被重复执行（多进程同时首次访问）。
+    if ((int) setting('schema_version') < 6) {
+        $pdo->exec('CREATE INDEX IF NOT EXISTS idx_enrich_created ON enrich(created_at)');
+        setSetting('schema_version', '6');
     }
 
     // ---------------------------------------------------------------- 短路

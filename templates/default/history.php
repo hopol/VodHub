@@ -3,7 +3,7 @@
  * default 模板 - 播放历史与收藏
  * 变量：$pageTitle, $siteTitle
  */
-require_once __DIR__ . '/header.php';
+require tplInclude('header.php', $tplName);
 ?>
 
 <div class="list-head">
@@ -76,4 +76,4 @@ require_once __DIR__ . '/header.php';
 })();
 </script>
 
-<?php require_once __DIR__ . '/footer.php'; ?>
+<?php require tplInclude('footer.php', $tplName); ?>

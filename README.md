@@ -197,11 +197,14 @@ VodHub/
 │   ├── auth.php             # 鉴权 + CSRF
 │   └── functions.php        # 工具函数
 ├── templates/
-│   └── <模板名>/
-│       ├── theme.json       # 元信息（名称、封面模式、列数）
-│       ├── header.php / footer.php / index.php ...
-│       ├── style.css        # 模板专属样式（CSS 变量在这里定义）
-│       └── partials/        # 可复用片段
+│   ├── default/             # 全站兜底，页面文件只保留一份
+│   │   ├── theme.json
+│   │   ├── header.php / footer.php / index.php / list.php / play.php ...
+│   │   └── partials/        # vod_grid / vod_meta / vod_side
+│   └── <模板名>/             # 一套新模板通常只有 3 个文件
+│       ├── theme.json       # 元信息（名称、封面模式、列数）—— 也是「模板存在」的标记
+│       ├── header.php       # 顶栏 + 搜索框（与 default 的差异通常在这）
+│       └── style.css        # 模板专属样式（CSS 变量在这里定义）
 ├── static/                  # 公共样式、app.js、hls.js（本地化）
 ├── docs/                   # 部署、配置、排障等文档（按「我想做什么」组织入口）
 ├── tests/                   # 【部署时不用上传】零依赖行为测试

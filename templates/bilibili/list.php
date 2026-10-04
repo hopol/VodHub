@@ -3,7 +3,7 @@
  * default 模板 - 内容列表页
  * 变量：$source, $sourceId, $typeId, $page, $data, $types, $curName
  */
-require_once __DIR__ . '/header.php';
+require tplInclude('header.php', $tplName);
 ?>
 
 <div class="list-head">
@@ -46,4 +46,4 @@ require_once __DIR__ . '/header.php';
     <?= renderPagination($page, $pagecount, "list.php?source={$sourceId}&type={$typeId}") ?>
 <?php endif; ?>
 
-<?php require_once __DIR__ . '/footer.php'; ?>
+<?php require tplInclude('footer.php', $tplName); ?>

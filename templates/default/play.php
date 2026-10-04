@@ -9,7 +9,7 @@
  *   - partials/vod_side.php  侧栏影片信息
  * 演职员与简介留在本文件，因为它们决定主栏排版。
  */
-require_once __DIR__ . '/header.php';
+require tplInclude('header.php', $tplName);
 ?>
 
 <?php if (!$detail): ?>
@@ -114,6 +114,6 @@ require_once __DIR__ . '/header.php';
 </div>
 <?php endif; ?>
 
-<?php require_once __DIR__ . '/footer.php'; ?>
+<?php require tplInclude('footer.php', $tplName); ?>
 
-<?php require_once __DIR__ . '/player_script.php'; ?>
+<?php require tplInclude('player_script.php', $tplName); ?>
