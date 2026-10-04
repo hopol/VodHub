@@ -83,7 +83,23 @@ function imgQs(string $qs, string $key): string {
 
 // 部署确认标记：curl -I 看这个头，就能确认你上传的文件真的生效了
 // （很多主机会开 OPcache，传完文件不重启仍跑旧代码，是最常见的「传了没用」）
-define('IMG_PROXY_VER', '1.2.0');
+//
+// ⚠⚠ **它必须跟随 APP_VERSION，不能自己写一个版本号。**
+//
+//   1.3.13 之前这里是写死的 '1.2.0' —— 而真实版本早已到 1.3.10，
+//   于是这个「确认机制」**确认的是 1.2.0 那个版本**：
+//   站长 curl 一下看到 `X-Img-Proxy: 1.2.0`，无论传的是哪一版，
+//   得到的都是同一个答案。**这个头等于没有信息量。**
+//
+//   本项目过去 12 次里有 8 次根因是「两个地方各写各的版本号，忘了同步」，
+//   所以这里从根上消掉第二个来源 ——
+//   少一个能漂移的地方，就少一类「A 改了 B 忘了」的事故。
+//
+// ⚠ 兜底：如果 config.php 是旧版（漏传），APP_VERSION 未定义，
+//   仍然给一个值而不是让这个头空掉 —— 它是诊断信息，空掉就没有诊断价值了。
+//   用 APP_NAME 之外的常量名做判据是因为 config.php 漏传时其它常量也一起没了。
+defined('APP_VERSION') || define('APP_VERSION', '未知（config.php 可能是旧版）');
+define('IMG_PROXY_VER', APP_VERSION);
 
 header('Content-Type: text/plain; charset=utf-8');
 header('X-Img-Proxy: ' . IMG_PROXY_VER);

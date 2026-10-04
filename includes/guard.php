@@ -181,6 +181,26 @@ function guardCaps(): array {
     $caps['cache_bytes'] = (int) ceil($caps['cache_bytes'] * $factor);
     $caps['page_files']  = (int) ceil($caps['page_files']  * $factor);
     $caps['page_bytes']  = (int) ceil($caps['page_bytes']  * $factor);
+    // 页面缓存的**跨桶总量**上限（1.3.13 新增）。
+    //
+    // ⚠ 为什么需要它：page_bytes 是**每个桶**的上限，而桶数由 bucket_hours 决定，
+    //   于是「每桶都顶满」时 c/ 的实际占用是 page_bytes × 桶数
+    //   （紧凑档 15 MB × 2 = 30 MB，标准档 40 MB × 2 = 80 MB），
+    //   **没有任何一层代码管得住这个总数**。
+    //   而 docs/lowpower.md 承诺的总预算里，页面缓存只占 15 MB（紧凑档）。
+    //
+    //   换句话说：1.3.11 把那句「对 c/ 顶层调 guardGcFiles()」的死代码删掉时，
+    //   正确的做法不是「承认它做不到」，而是**把它真正做成总量闸** ——
+    //   按桶整体回收（桶是天然的整体单位，按 mtime 删整个桶比逐文件删更省事，
+    //   也真正回收 inode）。
+    //
+    // 取值：与 page_bytes 相同（即文档承诺的那个数），让「文档写多少、代码就管多少」。
+    //
+    // ⚠⚠ **这里绝不能再乘一次 $factor** —— 上面几行已经把 page_bytes 缩放过了，
+    //   再乘就是**缩放两次**（实测 compact 档会变成 3.8 MB，只有预期的 1/4）。
+    //   本项目栽过「同一把尺子被量两次」这类错，所以专门留一行注释钉住它。
+    //   正确写法：直接**沿用已缩放好的** page_bytes。
+    $caps['page_total_bytes'] = $caps['page_bytes'];
     $caps['img_bytes']   = (int) ceil($caps['img_bytes']   * $factor);
 
     $caps['log_bytes']   = 2 * GUARD_MB;
@@ -278,7 +298,12 @@ function guardGcAll(): void {
             ? guardGcFiles(CACHE_DIR, (int) $caps['cache_files'], (int) $caps['cache_bytes'])
             : null,
         fn () => guardGcEnrich((int) $caps['enrich_days']),
-        fn () => guardGcPageBuckets((int) $caps['bucket_hours'], (int) $caps['page_files'], (int) $caps['page_bytes']),
+        fn () => guardGcPageBuckets(
+            (int) $caps['bucket_hours'],
+            (int) $caps['page_files'],
+            (int) $caps['page_bytes'],
+            (int) ($caps['page_total_bytes'] ?? 0)
+        ),
         fn () => guardGcFiles(IMG_CACHE_DIR, PHP_INT_MAX, (int) $caps['img_bytes']),
         fn () => guardGcFiles(DATA_DIR . '/rl',  (int) $caps['rl_files'],  GUARD_MB),
         fn () => guardGcFiles(DATA_DIR . '/queue', (int) $caps['queue_files'], GUARD_MB),
@@ -405,7 +430,7 @@ function guardGcFiles(string $dir, int $maxFiles, int $maxBytes): void {
  * 没有这条，c/ 会以「24 桶 × 200 页 × 40 KB ≈ 192 MB/天」增长，
  * 1 GB 磁盘 5 天就满。
  */
-function guardGcPageBuckets(int $hours, int $maxFiles, int $maxBytes): void {
+function guardGcPageBuckets(int $hours, int $maxFiles, int $maxBytes, int $maxTotalBytes = 0): void {
     // glob 也可能在某些主机上被 disable_functions 禁用 —— 禁了就不 GC，绝不能 fatal
     if (!function_exists('glob')) {
         return;
@@ -421,20 +446,67 @@ function guardGcPageBuckets(int $hours, int $maxFiles, int $maxBytes): void {
             guardRmDir($bucket);
         }
     }
-    // ⚠ 1.3.11 删掉了这里原来那句 guardGcFiles($dir, PHP_INT_MAX, $maxBytes)。
-    //   它是**死代码，且从来不是活的**：guardGcFiles() 第一件事就是
-    //   `foreach (glob($dir.'/*')) { if (!is_file($f)) continue; ... }`，
-    //   而 c/ 底下**全是时间桶目录**，没有任何条目能通过 is_file()，
-    //   于是 $total 恒为 0 → 判定「未超限」直接 return。
-    //   换句话说，文档承诺的「页面缓存共 15 MB」这个总闸**从未存在过**，
-    //   实际生效的是下面这句「每个桶各限 $maxFiles 个 / $maxBytes」——
-    //   总上限 = 桶数(2) × 每桶上限。文档已按实际行为更正（见 docs/lowpower.md）。
-    //
-    //   留着它比删掉更糟：注释宣称的兜底作用不存在，下一个人会以为总闸有效。
-    //
-    // 子桶内的文件也各自限量
+    // 每个桶内的文件各自限量（这一层一直是对的）
     foreach ((glob($dir . '/*', GLOB_ONLYDIR) ?: []) as $bucket) {
         guardGcFiles($bucket, $maxFiles, $maxBytes);
+    }
+
+    // ⚠⚠ **跨桶总量闸（1.3.13 才真正接上电）**
+    //
+    //   历史：1.3.11 把这里原来的 guardGcFiles($dir, PHP_INT_MAX, $maxBytes) 删了，
+    //   因为它是**死代码且从来不是活的** —— guardGcFiles() 第一件事就是
+    //   `foreach (glob($dir.'/*')) { if (!is_file($f)) continue; ... }`，
+    //   而 c/ 底下**全是时间桶目录**，没有一条能通过 is_file()，
+    //   于是 $total 恒为 0 → 判定「未超限」直接 return。
+    //   当时选择「承认它做不到」并把文档改成「每桶 × 桶数」。
+    //
+    //   但那只是把**问题写进文档**，不是解决问题：
+    //   文档承诺的总预算里页面缓存只占 15 MB（紧凑档），
+    //   而代码允许到 15 × 桶数 = 30 MB，多出来的那 15 MB 名正言顺地花掉了。
+    //
+    //   现在真正做成总量闸，**按桶整体回收**：
+    //     · 桶是天然的整体单位 —— 按 mtime 删整个桶比逐文件删更省事，
+    //       也真正回收 inode（逐文件 unlink 不会减少目录项）；
+    //     · 绝不用「把 MAX_BYTES 除以桶数」去改每桶上限 ——
+    //       那样会让**当前小时正在被 .htaccess 直出**的页面被削掉，
+    //       而总量闸只删「最旧且非当前」的桶，不影响在用页面。
+    //
+    // ⚠ 只删 mtime 最旧、且不是本小时的桶 —— 正在被直出的页面绝不能动。
+    if ($maxTotalBytes <= 0) {
+        return;
+    }
+    $thisHour = date('Ymd-H');
+    $buckets = [];
+    foreach ((glob($dir . '/*', GLOB_ONLYDIR) ?: []) as $bucket) {
+        $mtime = (int) @filemtime($bucket);
+        if ($mtime <= 0 || basename($bucket) === $thisHour) {
+            continue;   // 本小时桶：正在被 Apache 直出，绝不删
+        }
+        $bytes = 0;
+        foreach ((glob($bucket . '/*') ?: []) as $f) {
+            if (is_file($f)) {
+                $bytes += (int) @filesize($f);
+            }
+        }
+        if ($bytes > 0) {
+            $buckets[$bucket] = ['m' => $mtime, 's' => $bytes];
+        }
+    }
+    $total = array_sum(array_column($buckets, 's'));
+    if ($total <= $maxTotalBytes) {
+        return;
+    }
+    uasort($buckets, static fn (array $a, array $b): int => $a['m'] <=> $b['m']);   // 最旧在前
+    foreach ($buckets as $bucket => $info) {
+        if ($total <= $maxTotalBytes) {
+            break;
+        }
+        // guardRmDir() 返回 void，所以「删没删掉」只能自己验：
+        // 它是递归 unlink + rmdir，个别文件失败时目录可能还在。
+        guardRmDir($bucket);
+        if (!is_dir($bucket)) {
+            $total -= $info['s'];
+        }
     }
 }
 

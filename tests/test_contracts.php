@@ -926,5 +926,239 @@ t('tplInclude() 在两个模板都缺文件时返回空壳而不是 false', stat
     ok(is_file(tplInclude('../../config.php', 'netflix')), '路径穿越尝试必须落到空壳');
 });
 
+// ══════════════════════════════════════════════════════════════════════
+// 契约 6：页面静态缓存的「总量闸」必须真的接上电，且绝不删当前小时的桶
+// ══════════════════════════════════════════════════════════════════════
+//
+//  这条锁的是 1.3.11 → 1.3.13 那一波反复里最微妙的一段：
+//
+//    1.3.10 发现 `guardGcFiles($dir, PHP_INT_MAX, $maxBytes)` 是死代码
+//         （c/ 下全是桶目录，is_file() 一条都过不了，判定恒为「未超限」）。
+//    1.3.11 删掉了它，并把文档改成「每桶上限 × 桶数」——
+//         **那是把问题写进了文档，不是解决问题**：
+//         文档承诺的总预算里页面缓存只占 15 MB（紧凑档），
+//         而代码允许到 15 × 桶数，多出来的 15 MB 就名正言顺地花掉了。
+//    1.3.13 真正做成总量闸（page_total_bytes），并加这条契约钉住它。
+//
+//  两条安全性质，缺任何一条都是事故：
+//    ① 总量超限时**必须真的会删**（否则又变回一个假护栏）；
+//    ② **绝不删本小时的桶** —— 里面的页面正在被 .htaccess 直出，
+//       删了等于把访客正在看的页面变成回源渲染。
+
+group('契约 6：页面缓存总量闸（假护栏的对照组）');
+
+t('page_total_bytes 被 guardGcAll() 真的传下去了', static function () use ($root): void {
+    $gc = t_contract_code((string) file_get_contents($root . '/includes/guard.php'));
+    ok(
+        preg_match('/\$caps\[\s*[\'"]page_total_bytes[\'"]\s*\]/', $gc),
+        'page_total_bytes 必须被 guardGcAll() 读到并传给 guardGcPageBuckets() —— '
+        . '定义了就没人用的话，它就是 1.3.10 那个 enrich_days 的翻版'
+    );
+});
+
+t('总量闸不是又一段死代码（c/ 顶层全是目录，不能再对顶层调 guardGcFiles）', static function () use ($root): void {
+    $gc   = t_contract_code((string) file_get_contents($root . '/includes/guard.php'));
+    $body = t_contract_body($gc, 'guardGcPageBuckets');
+    ok($body !== null, '应能找到 guardGcPageBuckets()');
+    ok(
+        !preg_match('/guardGcFiles\(\$dir\s*,\s*PHP_INT_MAX/', (string) $body),
+        'guardGcPageBuckets() 里不得对 c/ 顶层再调 guardGcFiles() —— '
+        . 'c/ 下全是时间桶目录，没有一条能通过 is_file()，$total 恒为 0，'
+        . '这段代码**从来不是活的**（1.3.10 的原缺陷）。总量闸请按「桶整体回收」实现。'
+    );
+    ok(
+        str_contains((string) $body, 'guardRmDir('),
+        '总量闸必须按**桶整体回收**（guardRmDir）—— 桶是天然的整体单位，'
+        . '逐文件 unlink 不会减少目录项、也不真正回收 inode'
+    );
+});
+
+t('总量闸绝不删本小时的桶（那些页面正被 .htaccess 直出）', static function () use ($root): void {
+    $gc   = t_contract_code((string) file_get_contents($root . '/includes/guard.php'));
+    $body = t_contract_body($gc, 'guardGcPageBuckets');
+    ok($body !== null, '应能找到 guardGcPageBuckets()');
+    ok(
+        preg_match('/\$thisHour\s*=/', (string) $body) && str_contains((string) $body, '$thisHour'),
+        '总量闸必须显式排除本小时桶 —— 删掉它等于把访客正在看的页面变成回源渲染，'
+        . '那是 502 级事故而不是性能问题'
+    );
+    // 本小时桶必须出现在「跳过」分支里，而不是只被赋值一次就没人用
+    ok(
+        preg_match('/basename\(\$bucket\)\s*===\s*\$thisHour/', (string) $body),
+        '应能看到「桶名 === 本小时 → continue」这个跳过条件'
+    );
+});
+
+t('page_total_bytes 没有被缩放两次（同一把尺子不能量两次）', static function () use ($root): void {
+    // ⚠ 这是本条契约在实现时真踩到的 bug：
+    //   写成 $caps['page_total_bytes'] = ceil($caps['page_bytes'] * $factor)
+    //   而上面几行已经把 page_bytes 缩放过一次 —— 于是 compact 档实测变成
+    //   7.5 MB → 3.8 MB，只有预期的 1/4，护栏形同虚设。
+    $gc   = t_contract_code((string) file_get_contents($root . '/includes/guard.php'));
+    $body = t_contract_body($gc, 'guardCaps');
+    ok($body !== null, '应能找到 guardCaps()');
+    ok(
+        !preg_match('/page_total_bytes\]\s*=\s*[^;]*\*\s*\$factor/', (string) $body),
+        'page_total_bytes 直接沿用已缩放好的 page_bytes 即可 —— '
+        . 'page_bytes 在上面已经被 $factor 缩放过，再乘一次就是缩放两次，'
+        . '实测紧凑档会只剩预期的 1/4'
+    );
+    ok(
+        preg_match('/page_total_bytes\'\]\s*=\s*\$caps\[\s*[\'"]page_bytes[\'"]\s*\]/', (string) $body),
+        '应直接赋值为 $caps[\'page_bytes\']（已缩放好的值）'
+    );
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// 契约 7：版本号只有一个来源，文档里不许出现硬编码的旧版本
+// ══════════════════════════════════════════════════════════════════════
+//
+//  1.3.13 之前项目里有**三个**版本号，其中两个各写各的：
+//    · config.php  APP_VERSION     ✅ 基准
+//    · img.php     IMG_PROXY_VER   ❌ 写死 '1.2.0'，落后 10 个版本
+//    · CHANGELOG.md 顶部条目        ❌ 1.3.4 ~ 1.3.10 全挂在「## [1.3.4]」底下
+//
+//  而 IMG_PROXY_VER 是**部署确认标记** —— 注释明写「curl -I 看这个头，
+//  就能确认你上传的文件真的生效了」。它停在 1.2.0 意味着：
+//  站长 curl 一下，无论传的是哪一版，看到的都是 `X-Img-Proxy: 1.2.0`。
+//  **这个头等于没有信息量**，而它恰恰是排查「传了没生效」的第一手线索。
+//
+//  本项目过去 12 次里 8 次的根因是「两处各写各的，忘了同步」。
+//  所以契约 7 做两件事：把第二个来源消掉，并让文档里的版本号跟着走。
+
+group('契约 7：版本号只有一个来源');
+
+t('IMG_PROXY_VER 跟随 APP_VERSION，不自己写一个版本号', static function () use ($root): void {
+    $src = t_contract_code((string) file_get_contents($root . '/img.php'));
+    ok(
+        preg_match("/define\(\s*'IMG_PROXY_VER'\s*,\s*APP_VERSION\s*\)/", $src),
+        "IMG_PROXY_VER 必须直接取 APP_VERSION —— 它是部署确认标记"
+        . '（curl -I 看 X-Img-Proxy 确认新文件生效了），'
+        . '写死一个版本号会让这个标记**永远显示旧值**，等于没有信息量'
+    );
+    ok(
+        !preg_match("/define\(\s*'IMG_PROXY_VER'\s*,\s*'[\d.]+'/", $src),
+        "IMG_PROXY_VER 不许再写字面量版本号 —— 1.3.13 之前它写死 '1.2.0'，"
+        . '而真实版本早已到 1.3.10，站长 curl 看到的永远是 1.2.0'
+    );
+});
+
+t('img.php 在 config.php 是旧版时仍给出可诊断的头（不能是空的）', static function () use ($root): void {
+    $src = t_contract_code((string) file_get_contents($root . '/img.php'));
+    ok(
+        str_contains($src, "defined('APP_VERSION')"),
+        "APP_VERSION 未定义时（config.php 漏传）必须给个兜底值 —— "
+        . '这个头是诊断信息，空掉就没有诊断价值了'
+    );
+});
+
+t('CHANGELOG 里 1.3.5 之后的每个版本都有独立的二级标题', static function () use ($root): void {
+    $md = (string) file_get_contents($root . '/CHANGELOG.md');
+    // Keep a Changelog 的自动链接（[1.3.4] ↔ 1.3.10）依赖二级标题；
+    // 挂成 ### 子节的话，**按版本号搜更新日志的人根本搜不到**——
+    // 而「查 1.3.9 改了什么」是站长升级后的第一动作。
+    preg_match_all('/^## \[([\d.]+)\]/m', $md, $m);
+    $tops = $m[1];
+
+    // ⚠⚠ **判据必须从「代码里的版本号」推要检查哪些版本，不能写死清单。**
+    //   写死 ['1.3.5','1.3.10'] 的话，下次发 1.4.0 时它压根不在检查范围里 ——
+    //   而那正是「新版本又被挂成 ### 子节」第一次发生的时候。
+    //   （与契约 1 的「扫出来而不是列出来」同一个道理。）
+    preg_match("/APP_VERSION'\s*,\s*'([^']+)'/", (string) file_get_contents($root . '/config.php'), $v);
+    $cur = $v[1] ?? '';
+    ok($cur !== '', '应能从 config.php 读出 APP_VERSION');
+
+    // 从当前版本往下数，要求 1.3.x 的每个版本都有独立二级标题
+    $parts = explode('.', $cur);
+    $expect = [];
+    if ((int) $parts[0] === 1 && (int) $parts[1] === 3) {
+        for ($i = (int) $parts[2]; $i >= 0; $i--) {   // 1.3.x … 1.3.0
+            $expect[] = "1.3.$i";
+        }
+    } else {
+        $expect[] = $cur;   // 非 1.3 线：只要求当前版本有标题
+    }
+    $missing = array_values(array_filter($expect, static fn ($v) => !in_array($v, $tops, true)));
+    eq([], $missing,
+        '这些版本在 CHANGELOG 里没有独立的「## [x.y.z]」二级标题：'
+        . implode('、', $missing)
+        . "\n\n挂成 ### 子节的后果：Keep a Changelog 的自动链接全断，"
+        . "\n而且**按版本号搜更新日志的人搜不到** ——"
+        . "\n而「查 1.3.9 改了什么」正是站长升级后的第一动作。" );
+    // 版本号不应重复
+    $dup = array_keys(array_filter(array_count_values($tops), static fn ($n) => $n > 1));
+    eq([], $dup, 'CHANGELOG 里有重复的版本标题：' . implode('、', $dup));
+});
+
+t('README 的体积宣传与实测对得上', static function () use ($root): void {
+    // ⚠ 判据刻意做成「实测 vs 声明」，而不是去 grep 某个写死的数字：
+    //   写死「README 里不许出现 1.3 MB」的话，下次体积变了就得改判据，
+    //   而「判据要改」这件事本身很容易被忘掉 —— 于是判据失效、没人发现。
+    //   实测法则是：算出真实体积，要求 README 声明的数字覆盖它。
+    // ---- 算的是「站点部署载荷」，必须与 README 的口径一致 ----
+    //
+    // ⚠⚠ **排除项是被本契约自己逼出来的**，两次都是：
+    //
+    //   ① vp.php（17 KB）：它是**升级包里才有**的体检脚本，站点上跑完就该删，
+    //      不属于部署载荷。第一版没排除它，实测 0.95 → 0.97 直接变红。
+    //   ② CHANGELOG.md（109 KB）：更新日志是**给人读的**，不是站点运行所需。
+    //      它有 109 KB —— 比整个 includes/ 还大，绝不能算进「部署载荷」。
+    //   ③ 升级说明.md：只在升级包里，解压覆盖后可以删。
+    //
+    //   这三条都是「不在站点根目录长期存在」的文件。
+    //   口径若与 README 不一致，这条判据就只是在给自己制造红点。
+    $skipDirs = ['.git', 'docs', 'tests', 'runtime', '.github', 'c', 'static/imgcache'];
+    $skipFiles = [
+        'vp.php'            => '升级体检脚本，跑完即删',
+        'CHANGELOG.md'      => '更新日志，给人读的',
+        '升级说明.md'        => '只在升级包里',
+    ];
+    $bytes = 0;
+    $it = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS),
+        RecursiveIteratorIterator::SELF_FIRST
+    );
+    foreach ($it as $f) {
+        if (!$f->isFile()) {
+            continue;
+        }
+        $rel = substr((string) $f->getPathname(), strlen($root) + 1);
+        if (in_array(explode('/', $rel)[0], $skipDirs, true)) {
+            continue;
+        }
+        if (isset($skipFiles[$rel])) {
+            continue;
+        }
+        $bytes += (int) $f->getSize();
+    }
+    $mb  = $bytes / 1048576;
+    $src = (string) file_get_contents($root . '/README.md');
+    ok(
+        preg_match('/整个项目[^\\n]*?([\\d.]+)\\s*MB/', $src, $m),
+        'README 应声明部署载荷的实际体积（现在是「约 0.94 MB」），'
+        . '否则读者会拿一个对不上的数字做决定'
+    );
+    // ⚠ 容差 2 KB：README 里的数字是四舍五入后手写的，
+    //   988819 字节写「0.95 MB」是准确的，但 0.95 与实测只差 0.006 MB，
+    //   严格大于会把四舍五入误判成「往小说」。
+    //   所以判据是「声明值 + 容差 ≥ 实测值」。
+    //
+    // ⚠⚠ **这条判据只抓「往小说」，不抓「往大说」—— 这是刻意的**：
+    //   README 说 1.3 MB 而实测 0.95 MB 时，本条**不会**变红。
+    //   因为「往大说」是安全方向（读者以为更大，落到 1 GB 主机上仍绰绰有余），
+    //   而「往小说」才是会误导人的那种。
+    //   把两个方向都判红会逼着人把判据改成「精确等于某个魔数」，
+    //   那才是真正的退步 —— 详见同文件里契约 1 的「扫出来而不是列出来」。
+    ok(
+        (float) $m[1] + 0.002 >= $mb,
+        sprintf(
+            'README 说 %.3f MB，实测 %.3f MB —— 声明值必须覆盖实测值，'
+            . '宁可往大说也不要往小说（宣传性数字一旦对不上，读者会连对的那部分也不信）',
+            (float) $m[1],
+            $mb
+        )
+    );
+});
+
 // ==================================================================
 finish();

@@ -39,7 +39,9 @@ VodHub 是一个**你自己部署**的影视聚合站。它从你在后台配置
 - **零 Composer 依赖**，纯 PHP 标准库 + SQLite
 - **零前端框架**，原生 CSS + 原生 JS
 - **hls.js 本地化**，不依赖任何国外 CDN
-- 整个项目 **< 1 MB**，扔进虚拟主机的 `htdocs` 就能跑
+- 整个项目 **约 0.95 MB**（去掉 `hls.js` 是 599 KB），扔进虚拟主机的 `htdocs` 就能跑
+  > 1.3.10 时这个数字曾是 1.3 MB，1.3.12 模板去重（删掉 34 个与 default 逐字节相同的文件）
+  > 之后降到了 1 MB 以内。**不含 `docs/` 与 `tests/`** —— 那两个是开发用的，部署不必上传。
 
 ## ✨ 特性
 
@@ -189,13 +191,19 @@ VodHub/
 ├── index.php / list.php / play.php / search.php ...   # 前台页面（只管取数据）
 ├── admin.php                                          # 后台入口
 ├── config.php                                         # 全局配置（PHP 版本保护 + 路径常量）
-├── includes/
+├── includes/                # 全部业务逻辑（站点代码零引用这里以外的东西）
+│   ├── fields.php           # 字段层：确定性解析（不联网，最核心的一层）
+│   ├── enrich.php           # TypeSafe 归一化（唯一的模型层，异步 + 落库缓存）
+│   ├── guard.php            # 护栏：磁盘水位 + GC + 限流 + 环境体检
+│   ├── client.php           # 上游接口客户端（4 层缓存 / 负缓存 / 整页墙钟）
+│   ├── pagecache.php        # 页面静态化（时间桶 + Apache 直出）
+│   ├── imgcache.php         # 图片本地化
 │   ├── db.php               # SQLite 封装 + 自动表结构迁移
-│   ├── client.php           # 上游接口客户端（请求、缓存、降级）
-│   ├── template.php         # 模板发现 / 解析 / 加载
+│   ├── template.php         # 模板发现 / 解析 / 加载（含 default 回退）
 │   ├── admin-actions.php    # 后台所有 POST 动作分发
+│   ├── config-io.php        # 配置导入导出 + 系统缓存清理
 │   ├── auth.php             # 鉴权 + CSRF
-│   └── functions.php        # 工具函数
+│   └── functions.php        # 工具函数（含 coverUrl）
 ├── templates/
 │   ├── default/             # 全站兜底，页面文件只保留一份
 │   │   ├── theme.json

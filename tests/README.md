@@ -142,10 +142,10 @@ php tests/ci-check.php
 | `test_buildmeta.php` | 31 | `buildMeta()` 组合行为 + 「enrich 缺席也能独立工作」契约 |
 | `test_admin_actions.php` | 12 | 后台动作表结构 + 表单覆盖率 + 500 白屏事故的回归防护 |
 | `test_security.php` | 41 | 安全红线：SSRF 逐跳复检 / SVG 不落盘 / Cookie 属性 / TLS / CLI-only 符号 |
-| `test_contracts.php` | 28 | **契约测试**：跨文件约定（不是函数行为）。1.3.11 起 |
+| `test_contracts.php` | 36 | **契约测试**：跨文件约定（不是函数行为）。1.3.11 起 |
 | `report.php` | — | 双模式渲染：终端 ANSI 彩色 / 网页 HTML 报告（同一份数据） |
 | `run.php` | — | 统一入口：所有测试文件跑在**同一进程**（见下方「主机限制」） |
-| `ci-check.php` | — | CI 专用：数字自检 + **注入回归**（故意改坏 10 处，确认测试会变红） |
+| `ci-check.php` | — | CI 专用：数字自检 + **注入回归**（故意改坏 12 处，确认测试会变红） |
 
 > ⚠ 表里的「项数」是**写这份文档时的值**，会随用例增长而变。
 > 要确切数字请跑 `php tests/run.php --json | grep total` —— **别数 ✓ 的个数**
@@ -170,6 +170,8 @@ php tests/ci-check.php
 | 3 | 定义了的容量上限必须被用上 | 「定义了护栏但忘了接电」 | **`enrich_days` / `small` 两个死键**（P1-2 与一处同类） |
 | 4 | 文档「自动生效」类承诺要有代码路径 | 「照文档行事却等不到结果」 | `lowpower.md` 那句半错的说明 |
 | 5 | 模板去重的结构约束 | 「改一个 bug 要改 5 处」 | 去重时的两处静默失败（`__DIR__` 硬路径、`tplExists` 判据） |
+| 6 | 页面缓存总量闸 | 「定义了的护栏没接电」 | 本版实现时自己踩的「同一把尺子量两次」 |
+| 7 | 版本号只有一个来源 | 「部署确认标记停在 1.2.0」 | `IMG_PROXY_VER` 漂移、CHANGELOG 版本降级 |
 
 判据由 `tests/ci-check.php` 的注入回归保证有效 ——
 第 5、9 条注入分别把 `pcClear()` 与 `tplExists()` 的判据改坏，确认契约会红。
