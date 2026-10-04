@@ -283,6 +283,42 @@ function pcVersionGate(): void {
  * 所以只能由 PHP 主动删。
  */
 function pcClear(): void {
+    // 批量模式（pcClearBatch）内只登记意图，最外层退出时统一清一次。
+    // 原因见 pcClearBatch() 的说明：一次配置导入会写几十个源，
+    // 逐次 pcClear() 实测 60 个文件就要 5.9 ms × N，白主机上是纯浪费。
+    if ((int) ($GLOBALS['__pc_batch'] ?? 0) > 0) {
+        return;
+    }
+    pcClearNow();
+}
+
+/**
+ * 把一串写操作包起来，期间所有 pcClear() 只登记不执行，退出时清一次。
+ *
+ * ⚠ 为什么需要它：pcClear() 收口到数据层之后（见 db.php 的 addSource 等），
+ *   任何一次写数据源都会触发全量作废 —— 这是对的，但**批量路径会重复作废**。
+ *   实测 `c/` 下 60 个文件时单次 pcClear 约 5.9 ms，
+ *   一次「覆盖导入」写 50 个源就是 50 次 ≈ 295 ms（共享 CPU 上还要翻倍），
+ *   而这些源是一次性写完的，中间没有访客，中间态的缓存**没有任何意义**。
+ *
+ *   用法：`return pcClearBatch(function () { ...导入逻辑... });`
+ *
+ *   嵌套安全：按深度计数，最外层退出时才真正清。
+ */
+function pcClearBatch(callable $fn) {
+    $GLOBALS['__pc_batch'] = (int) ($GLOBALS['__pc_batch'] ?? 0) + 1;
+    try {
+        return $fn();
+    } finally {
+        $GLOBALS['__pc_batch'] = (int) $GLOBALS['__pc_batch'] - 1;
+        if ((int) $GLOBALS['__pc_batch'] === 0) {
+            pcClearNow();
+        }
+    }
+}
+
+/** pcClear() 的实际动作（分离出来，好让批量模式直接复用） */
+function pcClearNow(): void {
     $dir = PAGE_CACHE_DIR;
     if (!is_dir($dir)) {
         return;

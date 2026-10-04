@@ -304,6 +304,9 @@ function adminActionToggleSource(array $post): string {
             $newEnabled = $row['enabled'] ? 0 : 1;
             $stmt = db()->prepare('UPDATE sources SET enabled = ? WHERE id = ?');
             $stmt->execute([$newEnabled, $id]);
+            // 契约：这里是裸 SQL，绕过了 updateSource()，所以要自己作废。
+            // 1.3.10 之前漏了这条 —— 关掉的源在前台照旧展示最长一整点。
+            pcClear();
             return $newEnabled
                 ? '✅ 已启用「' . $row['name'] . '」'
                 : '⏸ 已关闭「' . $row['name'] . '」（前台不再展示）';

@@ -206,6 +206,29 @@ function setSetting(string $key, string $value): void {
     pcClear();
 }
 
+// ⚠⚠ **契约：任何会改变前台展示的写入，都必须让页面静态缓存失效。**
+//
+//   2026-10-04 复查发现：数据源与分组的增/改/删/启停**全都绕过** setSetting()
+//   （走的是下面的裸 CRUD 函数），于是 pcClear() 从来没被触发过 ——
+//   后台提示「✅ 已更新数据源」，前台却照旧渲染旧的静态 HTML，
+//   最长要等一整点才翻篇。
+//
+//   而 docs/lowpower.md 一直写着「任意配置写入都会自动全量作废」，
+//   那句话对这一半是错的 —— 且它恰好是站长唯一会去看的地方。
+//
+//   **修法选「在数据层收口」而不是「在 dispatcher 收口」**，理由：
+//     · dispatcher 收口要靠一张 action 白名单 —— 下次新增 action 又会漏，
+//       而这正是本项目过去 12 次反复栽跟头的同一类错误；
+//     · 数据层收口天然覆盖**所有**调用方（后台 POST、配置导入、
+//       将来的 CLI / 计划任务），新增写入只要走这几个函数就自动带上失效。
+//
+//   这条契约由 tests/test_contracts.php 第 1 条强制，不靠记性。
+//
+//   ⚠ 但「收口」不等于「无脑全清」：deleteGroup() 会连带 UPDATE sources，
+//     configImport() 一次写几十行 —— 逐次全量扫描 c/ 在免费主机上是纯浪费
+//     （实测 60 个文件单次 5.9 ms）。批量路径请用 pcClearBatch() 包起来，
+//     它让中途的 pcClear() 只登记意图、退出时清一次。
+
 /** 取全部数据源（默认仅启用的） */
 function getSources(bool $onlyEnabled = true): array {
     $sql = 'SELECT * FROM sources';
@@ -237,6 +260,7 @@ function addSource(string $name, string $apiUrl, int $sort = 0, string $note = '
     // $createdAt > 0 时保留原始收录时间（配置导入要用），否则取当前时间
     $stmt->execute([$name, $apiUrl, $sort, $note, $template, $groupId, $imgProxy, $imgHosts,
                     $createdAt > 0 ? $createdAt : time()]);
+    pcClear();   // 契约：新增源会改变页头的数据源标签栏与列表内容
     return (int) db()->lastInsertId();
 }
 
@@ -248,12 +272,16 @@ function updateSource(int $id, string $name, string $apiUrl, int $enabled, int $
             group_id = ?, img_proxy = ?, img_hosts = ? WHERE id = ?');
     $stmt->execute([$name, $apiUrl, $enabled, $sort, $note, $template,
                     $groupId, $imgProxy, $imgHosts, $id]);
+    // 契约：换模板 / 改名 / 改 URL / 改分组 / 改图片代理，前台全都看得见。
+    // 这条 1.3.10 之前是漏的 —— 后台显示保存成功，前台一整点内都是旧页面。
+    pcClear();
 }
 
 /** 删除数据源 */
 function deleteSource(int $id): void {
     $stmt = db()->prepare('DELETE FROM sources WHERE id = ?');
     $stmt->execute([$id]);
+    pcClear();   // 契约：已删的源不该继续出现在前台
 }
 
 // ==================================================================
@@ -280,6 +308,7 @@ function getGroup(int $id): ?array {
 function addGroup(string $name, int $sort = 0): int {
     $stmt = db()->prepare('INSERT INTO groups (name, sort) VALUES (?, ?)');
     $stmt->execute([$name, $sort]);
+    pcClear();   // 契约：分组名与分组归属都渲染在页头
     return (int) db()->lastInsertId();
 }
 
@@ -287,10 +316,12 @@ function addGroup(string $name, int $sort = 0): int {
 function updateGroup(int $id, string $name, int $sort): void {
     $stmt = db()->prepare('UPDATE groups SET name = ?, sort = ? WHERE id = ?');
     $stmt->execute([$name, $sort, $id]);
+    pcClear();   // 契约：改分组名 / 排序后前台页头必须立刻跟着变
 }
 
 /** 删除分组：组内的源自动归入"未分组"（group_id = 0） */
 function deleteGroup(int $id): void {
     db()->prepare('UPDATE sources SET group_id = 0 WHERE group_id = ?')->execute([$id]);
     db()->prepare('DELETE FROM groups WHERE id = ?')->execute([$id]);
+    pcClear();   // 契约：删组会让组内所有源改挂到「未分组」，前台页头随之变
 }

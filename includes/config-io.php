@@ -332,6 +332,11 @@ function configImport(array $data, string $mode): array {
         }
     }
 
+    // ⚠ 批量写入 → 期间的所有 pcClear() 只登记意图，退出时统一清一次。
+    //   pcClear() 自 1.3.11 起收口到数据层（db.php 的 addSource / updateSource…），
+    //   于是一次「覆盖导入」会触发几十次全量作废 —— 而中间态没有任何访客会看到。
+    //   实测 60 个文件单次 5.9 ms × 50 ≈ 295 ms，共享 CPU 上还要翻倍。
+    return pcClearBatch(static function () use ($data, $mode, $settings, $groups, $sources, $secrets): array {
     $pdo = db();
     $pdo->beginTransaction();
     try {
@@ -452,6 +457,8 @@ function configImport(array $data, string $mode): array {
     }
 
     setting('');                          // settings 有静态缓存，写完必须清
+    // clearSystemCache 的第一个参数只清接口缓存（api），
+    // 页面静态缓存由 pcClearBatch 退出时统一作废 —— 两者别重复。
     clearSystemCache(true, false, false); // 分组/源可能全变了，接口响应缓存全部作废
 
     $msg = sprintf(
@@ -463,6 +470,7 @@ function configImport(array $data, string $mode): array {
         $msg .= '；文件未含密钥，后台密码与访问密码保持不变';
     }
     return ['ok' => true, 'msg' => $msg];
+    });   // ← pcClearBatch 闭合：到这里才真正作废 c/
 }
 
 /**

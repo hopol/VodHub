@@ -5,6 +5,7 @@
 
 require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/imgcache.php';   // coverUrl() 要判断本地是否已有该图
+require_once __DIR__ . '/pagecache.php';  // learnImgHost() 要作废页面静态缓存
 
 if (!function_exists('h')) {
     /** HTML 转义，防止 XSS */
@@ -336,5 +337,10 @@ function learnImgHost(int $sourceId, string $host): bool {
 
     $stmt = db()->prepare('UPDATE sources SET img_hosts = ? WHERE id = ?');
     $stmt->execute([implode(',', $existing), $sourceId]);
+    // 契约：改的是 img_hosts 白名单，走的是裸 SQL，绕过了 updateSource()。
+    // 前台封面是否走 img.php 代理正是由它决定（coverUrl() 读 img_proxy，
+    // img.php 按 img_hosts 放行），白名单变了却留着旧静态页，
+    // 表现就是「后台识别到图片域名了，前台封面还是裂图」。
+    pcClear();
     return true;
 }
