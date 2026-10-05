@@ -291,6 +291,115 @@ t('parsePlayUrl 连续多个 $ 只当一个分隔符（1.3.3 修过的脏数据�
     );
 });
 
+t('parsePlayUrl 多线路时选可直接播的那套（1.4.1 修：整部播不出来）', static function (): void {
+    // 线上真实数据（source 5 / id 113215 / 影片「四渡」）。上游用 MacCMS 的
+    // $$$ 线路分隔符并接两套播放器：前一套是分享页 HTML 地址，后一套才是 m3u8。
+    // 从前按 #$\r\n 先切集数，$$$ 落进「正片」那一组，
+    // 于是 data-url 变成整串拼接、播放器拿到不存在的地址 → 一集都放不出来。
+    eq(
+        [['label' => '正片', 'url' => 'https://vv.jisuzyv.com/play/eZ603J6e/index.m3u8']],
+        parsePlayUrl('正片$https://vv.jisuzyv.com/play/eZ603J6e$$$正片$https://vv.jisuzyv.com/play/eZ603J6e/index.m3u8')
+    );
+});
+
+t('parsePlayUrl 多线路多集：取 m3u8 那套的全部集数', static function (): void {
+    // 线上真实数据（source 5 / id 153336）。第一套 5 集全是分享页地址，
+    // 第二套 5 集是 m3u8 直链，标签一一对应。
+    $share = ['epYzjKpa', 'bDk0OxYa', 'aOYZjXpd', 'b680qPNe', 'aKr6n4ze'];
+    $line1 = $line2 = [];
+    foreach ($share as $i => $k) {
+        $line1[] = '第' . ($i + 1) . '集$https://vv.jisuzyv.com/play/' . $k;
+        $line2[] = '第' . ($i + 1) . '集$https://vv.jisuzyv.com/play/' . $k . '/index.m3u8';
+    }
+    $want = [];
+    foreach ($line2 as $s) {
+        [$l, $u] = explode('$', $s);
+        $want[] = ['label' => $l, 'url' => $u];
+    }
+    eq($want, parsePlayUrl(implode('#', $line1) . '$$$' . implode('#', $line2)));
+});
+
+t('parsePlayUrl 多集片：$$$ 落在两套线路的接缝上（1.4.1 修过的最坏形状）', static function (): void {
+    // 线上真实形状（source 3 / id 8399，线上渲染出 487 个 chip）：
+    //   线路1 = 244 集分享页地址，线路2 = 244 集 m3u8，中间用 $$$ 接。
+    // 从前按 # 先切集数，接缝那一集会拿到 `地址A$$$第01集$地址B` 这种不存在的地址。
+    // 正确结果：244 集，且**全是** m3u8 直链。
+    $n     = 244;
+    $line1 = $line2 = [];
+    for ($i = 1; $i <= $n; $i++) {
+        $s = str_pad((string) $i, 2, '0', STR_PAD_LEFT);
+        $line1[] = '第' . $s . '集$https://cdn.example.com/share/' . $s;
+        $line2[] = '第' . $s . '集$https://cdn.example.com/' . $s . '_' . $s . '/index.m3u8';
+    }
+    $r = parsePlayUrl(implode('#', $line1) . '$$$' . implode('#', $line2));
+
+    eq($n, count($r), '集数应等于单条线路的集数，而不是两倍');
+    eq(
+        count($r),
+        count(array_filter($r, static fn (array $e): bool => isDirectPlayUrl($e['url']))),
+        '应全部是播放器能吃的直链'
+    );
+    eq('第01集', $r[0]['label']);
+    eq('https://cdn.example.com/01_01/index.m3u8', $r[0]['url']);
+    eq('第244集', $r[$n - 1]['label']);
+    eq('https://cdn.example.com/244_244/index.m3u8', $r[$n - 1]['url']);
+});
+
+t('parsePlayUrl 两套都可播时取第一套（不改变原有行为）', static function (): void {
+    eq(
+        [['label' => '正片', 'url' => 'https://a/1.m3u8']],
+        parsePlayUrl('正片$https://a/1.m3u8$$$正片$https://b/1.m3u8')
+    );
+});
+
+t('parsePlayUrl 分享页与直链混编时按比例择优，不整条丢掉能播的', static function (): void {
+    // 第一套 1 集分享页、第二套 2 集 m3u8 → 取第二套（2/2 高于 0/1）
+    eq(
+        [
+            ['label' => '第1集', 'url' => 'https://a/1.m3u8'],
+            ['label' => '第2集', 'url' => 'https://a/2.m3u8'],
+        ],
+        parsePlayUrl('第1集$https://a/share/x$$$第1集$https://a/1.m3u8#第2集$https://a/2.m3u8')
+    );
+});
+
+t('parsePlayUrl 没有任何直链时保留第一套（不制造新的空状态）', static function (): void {
+    eq(
+        [['label' => '正片', 'url' => 'https://a/share/x']],
+        parsePlayUrl('正片$https://a/share/x$$$正片$https://b/share/y')
+    );
+});
+
+t('splitPlayLines 只在「$ 被字符紧跟」处切，不会切开 $$ 脏数据', static function (): void {
+    eq(['蓝光$https://a/1.m3u8'], splitPlayLines('蓝光$https://a/1.m3u8'));
+    eq(['正片$https://a/1.m3u8'], splitPlayLines('正片$https://a/1.m3u8'));
+});
+
+t('splitPlayLines 前面没有「$」时把 $$$ 当标签分隔符（1.3.3 脏数据 + 1.4.1 线路符同形）', static function (): void {
+    // `蓝光$$$https://a/1.m3u8` 与 `线路1$…$$$线路2$…` 的 `$$$` 长得一样。
+    // 前者前面只有标签（没有 `$`），按线路切开就会把标签和地址拆成两半 → 标签变「播放」。
+    eq(['蓝光$$$https://a/1.m3u8'], splitPlayLines('蓝光$$$https://a/1.m3u8'));
+    eq(
+        ['正片$https://a/1.m3u8', '正片$https://b/1.m3u8'],
+        splitPlayLines('正片$https://a/1.m3u8$$$正片$https://b/1.m3u8')
+    );
+    eq(
+        ['第1集$https://a/1.m3u8#第2集$https://a/2.m3u8', '第1集$https://a/1.m3u8#第2集$https://a/2.m3u8'],
+        splitPlayLines('第1集$https://a/1.m3u8#第2集$https://a/2.m3u8$$$第1集$https://a/1.m3u8#第2集$https://a/2.m3u8')
+    );
+    eq(['正片$https://a/1.m3u8'], splitPlayLines('正片$https://a/1.m3u8'));
+    eq([], splitPlayLines(''));
+});
+
+t('isDirectPlayUrl 认直链、不认分享页与无扩展名地址', static function (): void {
+    ok(isDirectPlayUrl('https://a/1.m3u8'), 'm3u8');
+    ok(isDirectPlayUrl('https://a/1.MP4'), '大小写不敏感');
+    ok(isDirectPlayUrl('https://a/1.m3u8?token=x'), '带 query 仍是直链');
+    ok(!isDirectPlayUrl('https://a/share/abc'), '分享页不是直链');
+    ok(!isDirectPlayUrl('https://a/play/abc'), '播放页不是直链');
+    ok(!isDirectPlayUrl('https://a/stream'), '无扩展名不认定');
+});
+
 t('parsePlayUrl 无 $ 时整串当地址，标签回退为「播放」', static function (): void {
     eq(
         [['label' => '播放', 'url' => 'https://a/1.m3u8']],

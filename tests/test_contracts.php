@@ -1266,4 +1266,50 @@ t('README 的体积宣传与实测对得上', static function () use ($root): vo
 });
 
 // ==================================================================
+// 契约 8：任何「把 vod_play_url 交给播放器」的地方，都必须先过 parsePlayUrl
+// ==================================================================
+//
+// 2026-10-05 线上事故：source 5 的影片播不出来。根因是上游用 MacCMS 的
+// `$$$` 把**两套线路**并接在同一个 vod_play_url 里，而解析时先按 `#` 切了集数，
+// `$$$` 于是落进「两套线路接缝」的那一集，它的地址变成
+// `地址A$$$第01集$地址B` —— 播放器拿到一段不存在的 URL，静默失败。
+//
+// 这条契约守的是**约定**而非某个函数：上游改用别的线路分隔符（MacCMS 系
+// 还见过 `$$$` / `$`+换行 的各种变体）时，只要解析入口仍是 parsePlayUrl，
+// 就还在覆盖范围内；反过来，若有人新写一条「直接把 vod_play_url 塞给播放器」
+// 的捷径而绕开它，这里会红。
+//
+// 判据是**扫出来的**（全仓库找 data-url / hls.loadSource 的赋值来源），
+// 不是列出来的 —— 否则新增第 2 个模板时不会被检查，测试照样全绿。
+
+t('契约 8 播放器拿到的地址都来自 parsePlayUrl，没有绕开线路解析的捷径', static function (): void {
+    $files = [];
+    $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator(dirname(__DIR__), FilesystemIterator::SKIP_DOTS));
+    foreach ($it as $f) {
+        $p = (string) $f;
+        if (!preg_match('/\.(php|js)$/', $p) || str_contains($p, '/tests/') || str_contains($p, '/.git/')) {
+            continue;
+        }
+        $files[] = $p;
+    }
+
+    $offenders = [];
+    foreach ($files as $p) {
+        $src = (string) file_get_contents($p);
+        // data-url 只能来自 $p['url']（parsePlayUrl 的产物），不能来自 $detail['vod_play_url']
+        if (preg_match('/data-url="[^"]*\$\w+\[[\'"]vod_play_url[\'"]\]/', $src)) {
+            $offenders[] = $p;
+        }
+        // hls.js / 原生播放的入参同理
+        if (preg_match('/loadSource\(\s*\$\w+\[.vod_play_url.\]/', $src)
+            || preg_match('/video\.src\s*=\s*\$\w+\[.vod_play_url.\]/', $src)) {
+            $offenders[] = $p;
+        }
+    }
+    eq([], array_values(array_unique($offenders)),
+        "这些文件把上游原始 vod_play_url 直接喂给了播放器 —— 那会绕过线路解析，"
+        . "重现 2026-10-05 的「一集都放不出来」：\n  " . implode("\n  ", $offenders));
+});
+
+// ==================================================================
 finish();

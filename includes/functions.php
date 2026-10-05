@@ -137,9 +137,50 @@ function playFromList(?string $playFrom): array {
     return $out;
 }
 
-function parsePlayUrl(?string $playUrl): array {
+/**
+ * 按**播放线路**切开上游的 `vod_play_url`。
+ *
+ * ⚠️ `$$$` 有两种含义，形状完全一样，必须靠位置区分：
+ *   1. MacCMS 的**线路分隔符**（上游用它并接多套播放器）—— 前面已经有完整的「集$地址」；
+ *   2. 「名$$$地址」脏数据里那个分隔符（1.3.3 修过的那类）—— 前面只有一个集名。
+ * 判据就是**前面那段里有没有 `$`**：没有 `$` 说明前面连地址都还没开始，
+ * 那它不可能是「线路之间的分隔」，只能是标签和地址之间的那个。
+ *
+ * 关键在**切的顺序**：必须先按线路切、再按集数切。反过来会切出垃圾——
+ * 上游形如 `线路1的各集#…#线路1最后一集$地址N$$$线路2各集#…`，
+ * 先按 `#` 切的话 `$$$` 会落进「线路1最后一集」那一组，
+ * 于是那一集的地址变成 `地址N$$$线路2第1集$地址1`，播放器拿到一段不存在的 URL。
+ * 实测症状：整部片子只有**这一集**（多集片）或**整部**（单集片）播不出来。
+ */
+function splitPlayLines(string $raw): array {
+    $raw   = trim($raw);
+    if ($raw === '') {
+        return [];
+    }
+    $parts = preg_split('/\$\$\$(?=[^$])/', $raw) ?: [$raw];
+    $lines = [];
+    $cur   = '';
+    foreach ($parts as $p) {
+        if ($cur !== '' && !str_contains($cur, '$')) {
+            // 上一段还没有「标签$地址」结构 → 这是标签后的分隔符，并回上一段
+            $cur .= '$$$' . $p;
+            continue;
+        }
+        if ($cur !== '') {
+            $lines[] = $cur;
+        }
+        $cur = $p;
+    }
+    if ($cur !== '') {
+        $lines[] = $cur;
+    }
+    return $lines;
+}
+
+/** 一条线路内的集数：`标签$地址`，集数之间用 `#` 或换行分隔 */
+function parsePlayEpisodes(string $line): array {
     $result = [];
-    $groups = preg_split('/[#\r\n]+/', (string) $playUrl);
+    $groups = preg_split('/[#\r\n]+/', $line);
     foreach ($groups as $group) {
         $group = trim($group);
         if ($group === '') {
@@ -163,6 +204,38 @@ function parsePlayUrl(?string $playUrl): array {
         }
     }
     return $result;
+}
+
+/** hls.js / 原生能直接播的直链。分享页那种 HTML 页面不在内——喂给播放器只会静默失败 */
+function isDirectPlayUrl(string $url): bool {
+    $path = (string) (parse_url($url, PHP_URL_PATH) ?: $url);
+    return (bool) preg_match('/\.(m3u8|mp4)$/i', $path);
+}
+
+/**
+ * 解析 `vod_play_url`。
+ *
+ * 上游一条影片常给**多套线路**，第一套给的是分享页地址（`/share/xxx` 或
+ * `/play/xxx`，浏览器打开是个 HTML 播放页，不是流），后面几套才是 m3u8 直链。
+ * 播放器只吃直链，所以这里在多套线路里挑**可直接播的比例最高**的那一套；
+ * 一套都不可播时保留第一条，行为与从前一致（不制造新的空状态）。
+ */
+function parsePlayUrl(?string $playUrl): array {
+    $best      = [];
+    $bestScore = -1.0;
+    foreach (splitPlayLines((string) $playUrl) as $line) {
+        $eps = parsePlayEpisodes($line);
+        if ($eps === []) {
+            continue;
+        }
+        $direct = count(array_filter($eps, static fn (array $e): bool => isDirectPlayUrl($e['url'])));
+        $score  = $direct / count($eps);
+        if ($score > $bestScore) {
+            $bestScore = $score;
+            $best      = $eps;
+        }
+    }
+    return $best;
 }
 
 /** 分页组件 */
