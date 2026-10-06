@@ -67,7 +67,7 @@ if (!function_exists('vhGetEnv')) {
 define('APP_NAME', '影视聚合站');
 
 // 版本号（与 CHANGELOG.md 保持一致）
-define('APP_VERSION', '1.5.2');
+define('APP_VERSION', '1.5.3');
 
 // ================================================================
 // 数据目录（安全基线 · 无 .htaccess 也能守住的那一条）

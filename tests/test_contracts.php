@@ -179,12 +179,31 @@ function t_contract_same(string $a, string $b): bool {
 
 /** 需要扫描的业务代码文件（入口页 + includes/） */
 function t_contract_files(string $root): array {
+    // ⚠ **必须递归**，不能只 glob 顶层。
+    //
+    // 1.3.x~1.5.2 的写法是 `glob($root.'/includes/*.php')` + `glob($root.'/*.php')`，
+    // **只看两层**。1.5.3 把 admin.php 的 5 个视图片段放进 includes/admin/view/ 后，
+    // 它们**整片落在扫描范围之外** —— 那 5 个片段正是 guardCaps() 那几个键
+    // （base / free / pct / probe）唯一的读取点，于是判据当场变红，
+    // 报「定义了却没人读」。**而事实上有人读，只是判据看不见。**
+    //
+    // 这正是「判据的范围不能挂在会变的常量上」：目录结构一变，判据静默失效。
+    // 现在按**递归扫全部生产代码**，新增任何目录都自动纳入检查。
+    // （扫两个不相干的顶层 glob 看似「列出来」，其实正是本项目反复警告的反面。）
     $out = [];
-    foreach (glob($root . '/includes/*.php') ?: [] as $f) {
-        $out[] = $f;
-    }
-    foreach (glob($root . '/*.php') ?: [] as $f) {
-        $out[] = $f;
+    $it = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS)
+    );
+    foreach ($it as $f) {
+        if (!$f->isFile() || !str_ends_with($f->getFilename(), '.php')) {
+            continue;
+        }
+        $rel = substr((string) $f->getPathname(), strlen($root) + 1);
+        // 只要生产代码：tests/ 是测试自己（本文件就是判据）；.git/ 不是源码
+        if (str_starts_with($rel, 'tests/') || str_starts_with($rel, '.git/')) {
+            continue;
+        }
+        $out[] = (string) $f->getPathname();
     }
     sort($out);
     return $out;
@@ -827,70 +846,6 @@ t('每套主题的 theme.json 都声明了自己的样式表与搜索框文案',
         "这些主题的 theme.json 缺字段：\n  " . implode("\n  ", $bad)
         . "\n\n缺 style 会让该主题**丢了自己的配色**（只剩 static/style.css），"
         . "而且不报错 —— 页面照常渲染，只是变成默认主题的样子。");
-});
-
-t('没有定义了却没人调用的函数（1.5.1 起加了这条）', static function () use ($root): void {
-    // 起因：cacheSize() 从 1.0.0 就没人调用，vhSetting() 从 1.3.3 起没人调用，
-    // 两个都是**写完就忘了**的那种死代码 —— 不会让任何测试变红，
-    // 因为**没有任何函数的行为依赖它们**。
-    //
-    // 判据是**扫出来的**（遍历全仓库的函数声明，再逐个找调用点），
-    // 不是列出来的 —— 否则新增第 3 个死函数时不会被检查，测试照样全绿。
-    $skip = [
-        // adminAction* 由 dispatcher 动态派发（admin.php 里拼函数名后 call），
-        // 源码里找不到字面调用点，是误报而非死代码。
-        'adminActionAddSource', 'adminActionUpdateSource', 'adminActionDeleteSource',
-        'adminActionTestSource', 'adminActionAccessSettings', 'adminActionChangeAdminPassword',
-        'adminActionSiteSettings', 'adminActionAddGroup', 'adminActionUpdateGroup',
-        'adminActionDeleteGroup', 'adminActionDetectImgHost', 'adminActionToggleSource',
-        'adminActionSiteTemplate', 'adminActionResetTemplate', 'adminActionClearCache',
-        'adminActionImportConfig',
-    ];
-    $names = $skip;
-    $it = new RecursiveIteratorIterator(
-        new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS)
-    );
-    foreach ($it as $f) {
-        $p = (string) $f;
-        if (!preg_match('/\.php$/', $p) || str_contains($p, '/tests/')) {
-            continue;
-        }
-        if (preg_match_all('/^\s*function\s+(\w+)\s*\(/m', (string) file_get_contents($p), $m)) {
-            foreach ($m[1] as $fn) {
-                $names[] = $fn;
-            }
-        }
-    }
-    // 所有非测试代码拼成一份，统计每个函数名的出现次数
-    $all   = '';
-    $files = [];
-    foreach (new RecursiveIteratorIterator(
-        new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS)
-    ) as $f) {
-        $p = (string) $f;
-        if (!preg_match('/\.php$/', $p) || str_contains($p, '/tests/')) {
-            continue;
-        }
-        $files[] = $p;
-    }
-    foreach ($files as $p) {
-        $all .= (string) file_get_contents($p);
-    }
-    $dead = [];
-    foreach (array_unique($names) as $fn) {
-        if (in_array($fn, $skip, true)) {
-            continue;
-        }
-        // 「定义处」也是一次出现，所以出现 1 次 = 只有定义、没有调用
-        if (preg_match_all('/(?<![\w$>:])' . preg_quote($fn, '/') . '\s*\(/', $all) <= 1) {
-            $dead[] = $fn;
-        }
-    }
-    eq([], $dead,
-        "这些函数定义了但**全项目没有任何地方调用**：\n  " . implode("\n  ", $dead)
-        . "\n\n死代码不会让任何测试变红，因为没有任何函数的行为依赖它 ——"
-        . "\n这正是它能活很久的原因（cacheSize() 从 1.0.0 活到 1.5.1）。"
-        . "\n处理方式：接上真实的读取点，或者删掉。别留着假装有防护。");
 });
 
 t('没有模板重新长出与 default 逐字节相同的文件（那正是要消灭的重复）', static function () use ($root): void {
@@ -1565,5 +1520,87 @@ t('.htaccess 只用 FileInfo 类指令（越权指令会让整站 500）', stati
 });
 
 // ══════════════════════════════════════════════════════════════════════
+
+
+// ══════════════════════════════════════════════════════════════════════
+// 契约 12：没有定义了却没人调用的函数
+// ══════════════════════════════════════════════════════════════════════
+//
+//  1.5.3 把它从「契约 5：模板去重的结构约束」里挪出来独立成组。
+//
+//  ⚠ **挪的理由不是测试失效**（它原来照样会红），而是**分组错位**：
+//   1.5.1 加这条时顺手加在了当时正在编辑的契约 5 后面。后果是
+//   「这项目怎么防死代码」这个问题，翻「契约 5 · 模板结构」不会得到任何结果 ——
+//   读者按分组找不着它。**判据有效 ≠ 判据可发现。**
+//
+//  也不适合并入契约 3（定义了的容量上限必须真的被用上）：那条的扫描对象是
+//   `guardCaps()` 的键，这条扫的是全仓库的函数声明，判据实现完全不同，
+//   混在一组会让两套判据互相干扰阅读。
+//
+//  两者同属「假护栏」母类：**定义了却没人用**。
+
+t('没有定义了却没人调用的函数（1.5.1 起加了这条）', static function () use ($root): void {
+    // 起因：cacheSize() 从 1.0.0 就没人调用，vhSetting() 从 1.3.3 起没人调用，
+    // 两个都是**写完就忘了**的那种死代码 —— 不会让任何测试变红，
+    // 因为**没有任何函数的行为依赖它们**。
+    //
+    // 判据是**扫出来的**（遍历全仓库的函数声明，再逐个找调用点），
+    // 不是列出来的 —— 否则新增第 3 个死函数时不会被检查，测试照样全绿。
+    $skip = [
+        // adminAction* 由 dispatcher 动态派发（admin.php 里拼函数名后 call），
+        // 源码里找不到字面调用点，是误报而非死代码。
+        'adminActionAddSource', 'adminActionUpdateSource', 'adminActionDeleteSource',
+        'adminActionTestSource', 'adminActionAccessSettings', 'adminActionChangeAdminPassword',
+        'adminActionSiteSettings', 'adminActionAddGroup', 'adminActionUpdateGroup',
+        'adminActionDeleteGroup', 'adminActionDetectImgHost', 'adminActionToggleSource',
+        'adminActionSiteTemplate', 'adminActionResetTemplate', 'adminActionClearCache',
+        'adminActionImportConfig',
+    ];
+    $names = $skip;
+    $it = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS)
+    );
+    foreach ($it as $f) {
+        $p = (string) $f;
+        if (!preg_match('/\.php$/', $p) || str_contains($p, '/tests/')) {
+            continue;
+        }
+        if (preg_match_all('/^\s*function\s+(\w+)\s*\(/m', (string) file_get_contents($p), $m)) {
+            foreach ($m[1] as $fn) {
+                $names[] = $fn;
+            }
+        }
+    }
+    // 所有非测试代码拼成一份，统计每个函数名的出现次数
+    $all   = '';
+    $files = [];
+    foreach (new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS)
+    ) as $f) {
+        $p = (string) $f;
+        if (!preg_match('/\.php$/', $p) || str_contains($p, '/tests/')) {
+            continue;
+        }
+        $files[] = $p;
+    }
+    foreach ($files as $p) {
+        $all .= (string) file_get_contents($p);
+    }
+    $dead = [];
+    foreach (array_unique($names) as $fn) {
+        if (in_array($fn, $skip, true)) {
+            continue;
+        }
+        // 「定义处」也是一次出现，所以出现 1 次 = 只有定义、没有调用
+        if (preg_match_all('/(?<![\w$>:])' . preg_quote($fn, '/') . '\s*\(/', $all) <= 1) {
+            $dead[] = $fn;
+        }
+    }
+    eq([], $dead,
+        "这些函数定义了但**全项目没有任何地方调用**：\n  " . implode("\n  ", $dead)
+        . "\n\n死代码不会让任何测试变红，因为没有任何函数的行为依赖它 ——"
+        . "\n这正是它能活很久的原因（cacheSize() 从 1.0.0 活到 1.5.1）。"
+        . "\n处理方式：接上真实的读取点，或者删掉。别留着假装有防护。");
+});
 
 finish();

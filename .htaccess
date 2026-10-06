@@ -7,6 +7,13 @@
 
     RewriteRule ^templates/.*\.(php|json)$ - [F,L]
 
+    # includes/ 下放的全是 PHP（1.5.3 起含会 echo 的后台视图片段），
+    # 从来没被当作 URL 引用过（前端零引用）。原本它是可直取的 —— 实测
+    # `GET /includes/functions.php` 返回 200 + 0 字节；而视图片段被直取会
+    # **吐出未初始化变量的页面骨架与文件路径**。与上面挡 templates/ 的道理相同：
+    # 会 echo 的视图不该能被 HTTP 直接拿到。
+    RewriteRule ^includes/ - [F,L]
+
     RewriteCond %{REQUEST_METHOD} =GET
     # ⚠ 这条判据是 1.5.2 补的（**顺序敏感，别删**）：
     #   Apache 的 RewriteRule 自上而下第一条匹配即 [L]，而下一条才是「?source=N」的。

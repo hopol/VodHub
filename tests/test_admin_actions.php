@@ -81,14 +81,40 @@ t('映射表无重复 value（两个 action 指向同一函数必有一处是错
 // 二、表单覆盖率：这是「加了按钮忘了注册」的唯一防线
 // ==================================================================
 
-t('admin.php 表单里的每个 action 都已注册', static function () use ($root): void {
+/**
+ * 后台表单所在的全部源文件。
+ *
+ * ⚠ 1.5.3 拆 admin.php 后，表单 HTML 已经**不在 admin.php 里**了
+ * （拆进了 includes/admin/view/*.php）。当时这条判据还读 `admin.php` 一个文件，
+ * 结果只解析出 0 个 action、当场变红 —— **不是因为代码坏了，是判据的范围过时了**。
+ *
+ * 现在按「**哪些文件可能放表单**」去扫，而不是「我印象里表单在哪个文件」：
+ *   ① admin.php（外壳、还有 login 那类直接输出的表单）
+ *   ② includes/admin/view/*.php（1.5.3 拆出的 5 个区块，表单全在这里）
+ *
+ * 将来再拆一层（比如 sections/ 子目录），把那个目录加进来即可；
+ * 关键是**范围由「视图放哪」决定，由路径描述，不写死单个文件名**。
+ */
+function tAdminHtmlSources(string $root): string {
+    $src = '';
+    foreach (['/admin.php', '/login.php'] as $f) {
+        $src .= (string) @file_get_contents($root . $f);
+    }
+    foreach (glob($root . '/includes/admin/view/*.php') ?: [] as $f) {
+        $src .= "\n" . (string) file_get_contents($f);
+    }
+    return $src;
+}
+
+t('后台表单里的每个 action 都已注册', static function () use ($root): void {
     global $_ADMIN_ACTION_MAP;
-    $html = (string) @file_get_contents($root . '/admin.php');
-    ok($html !== '', '读不到 admin.php');
+    $html = tAdminHtmlSources($root);
+    ok($html !== '', '读不到任何后台源文件');
 
     preg_match_all('/name="action"\s+value="([a-z_]+)"/', $html, $m);
     $used = array_values(array_unique($m[1]));
-    ok(count($used) > 0, '没从 admin.php 里解析出任何 action —— 正则与模板不匹配了');
+    ok(count($used) > 0, '没从后台源文件里解析出任何 action —— 正则与模板不匹配了'
+        . '（1.5.3 之后表单在 includes/admin/view/ 里，别只读 admin.php）');
 
     $missing = [];
     foreach ($used as $a) {
@@ -101,7 +127,7 @@ t('admin.php 表单里的每个 action 都已注册', static function () use ($r
 
 t('action 命名风格在表单与映射表之间一致', static function () use ($root): void {
     global $_ADMIN_ACTION_MAP;
-    $html = (string) @file_get_contents($root . '/admin.php');
+    $html = tAdminHtmlSources($root);
     preg_match_all('/name="action"\s+value="([a-z_]+)"/', $html, $m);
     foreach (array_unique($m[1]) as $a) {
         ok(
