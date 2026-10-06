@@ -57,7 +57,10 @@ templates/
     └── style.css               # 模板专属样式
 ```
 
-> ⚠ **1.3.12 起，一套新模板通常只需要 `theme.json` + `header.php` + `style.css`。**
+> ⚠ **1.5.1 起，一套新模板只需要 `theme.json` + `style.css` —— 连 `header.php` 都不用写。**
+> 头部（`<head>` + 顶栏 + 搜索框）**全站只有 `templates/default/header.php` 一份**，
+> 缺失时 `tplInclude()` 自动回退。主题之间的两处差异收在 `theme.json`：
+> `style`（引自己的 style.css）与 `search_ph`（搜索框 placeholder）。
 >
 > 页面文件（`index` / `list` / `play` / `search` / `history` / `login` /
 > `footer` / `player_script` 与 `partials/*`）**不必复制** ——
@@ -89,7 +92,8 @@ templates/
 | 文件 | 作用 | 必需？ |
 |------|------|:---:|
 | `theme.json` | 模板名、说明、封面模式、列数。**同时是「这套模板存在」的标记** | ✅ |
-| `header.php` | HTML 头 + 顶栏 + 源切换标签 + 搜索框 | ✅ |
+| `theme.json` | **必需**。模板存在的标记 + `style` / `search_ph` / `cover_mode` / `columns` | ✅ |
+| `header.php` | HTML 头 + 顶栏 + 源切换标签 + 搜索框 | ❌ 1.5.1 起**不用自带**，回退 default |
 | `style.css` | 模板专属样式（`default` 除外，它复用 `static/style.css`） | ✅ |
 | `footer.php` | 页脚 | ❌ 回退 default |
 | `index.php` | 首页（按源分区块列分类） | ❌ 回退 default |
@@ -273,7 +277,9 @@ header 注入 <style>:root { --xxx-yyy: 值; }</style>
 
 **3. header 必须注入变量**
 
-`header.php` 里要带上这段（缺了保存了也不生效）：
+> ⚠ **1.5.1 起这段已经在 `templates/default/header.php` 里了**，你不用写。
+> 它会自动读 `theme.json` 的 `style` / `search_ph`。
+> 下面这段只是说明它在 default 的头部里长什么样：
 
 ```php
 <link rel="stylesheet" href="templates/mytheme/style.css">
@@ -364,16 +370,26 @@ sed -i 's/var(--\([a-z-]*\)/var(--my-\1/g' templates/mytheme/style.css
 | `--my-columns` | 后台「模板编辑」 | 站点设置为 0 时 |
 | `5` | 你自己写的兜底 | 两者都没配时 |
 
-### 第 6 步：改 header.php 的样式引用
+### 第 6 步：在 theme.json 里声明样式表
 
-```php
-<link rel="stylesheet" href="templates/mytheme/style.css">
-<?php if (!empty($tplMeta['vars'])): ?>
-<style>:root { <?php foreach ($tplMeta['vars'] as $k => $v): echo h($k), ':', h($v), ';'; endforeach; ?> }</style>
-<?php endif; ?>
+**1.5.1 起不用改 header.php 了。** 头部全站只有一份，主题差异走配置：
+
+```json
+{
+    "title": "我的模板",
+    "cover_mode": "tall",
+    "columns": 5,
+    "style": "templates/mytheme/style.css",
+    "search_ph": "搜索影片名称…"
+}
 ```
 
-**5 个页面 header 都要改**（`index/list/play/search/history/login` 共用同一个 `header.php`，所以只需改一处）。
+- `style` —— 引自己的样式表。**留空则该主题只有 `static/style.css`**（看起来像丢了配色，但不报错）
+- `search_ph` —— 搜索框 placeholder
+
+> ⚠ **注入顺序不能调**：`static/style.css` → 站点设置列数 → **你的 style.css** → 后台模板编辑器变量。
+> 最后一段必须在最后，才能压过你自己写的 `--xxx-columns` ——
+> 那是「模板编辑器优先级最高」的实现。
 
 ### 第 7 步：自测
 

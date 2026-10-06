@@ -2,5 +2,7 @@
     "title": "豆瓣风格",
     "description": "深绿主题，横向列表行布局，封面为宽图 16:9，信息紧凑易扫读",
     "cover_mode": "wide",
-    "columns": 6
+    "columns": 6,
+    "style": "templates/douban/style.css",
+    "search_ph": "搜索影视…"
 }

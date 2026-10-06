@@ -24,25 +24,18 @@
 require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/functions.php';
 
-/**
- * 读一条后台设置（只读，不联网）。
+/*
+ * 曾有一个 vhSetting() 包裹层做「读不到就退默认值」的兜底，
+ * 1.5.1 删除 —— 全项目零调用点（1.3.3 起 warmBudget 改成由调用方显式覆盖后就没人用了）。
  *
- * 这里**不能**顶层 require db.php：db.php 会 require 本文件（setSetting()
- * 末尾要作废接口缓存），顶层互相 require 会成环。所以 setting() 必须在
- * 函数体内调用 —— 而构造函数要读 warm_budget，只能在调用时才读，
- * 届时 db.php 必然已由 auth.php / functions.php 的调用链加载完毕。
- * db.php 没加载时（极少数裸调用）退回默认值，绝不 fatal。
+ * ⚠ 保留这条约束，因为**它仍然成立**，且踩过：
+ *   本文件**不能**顶层 require db.php —— db.php 会 require 本文件
+ *   （setSetting() 末尾要作废接口缓存），顶层互相 require 会成环。
+ *   所以这里读设置只能用「函数体内调 setting()」的写法；
+ *   若将来又要读 warm_budget 之类，请沿用 VodClient 构造函数里那段注释的
+ *   办法：由调用方在 setting() 可用之后调 warmBudget() 显式覆盖，
+ *   **不要**在 client.php 顶层引入 db.php。
  */
-function vhSetting(string $key, string $default = ''): string {
-    if (!function_exists('setting')) {
-        return $default;
-    }
-    try {
-        return setting($key, $default);
-    } catch (Throwable $e) {
-        return $default;
-    }
-}
 
 // 1.3.0 在 config.php 里新增的常量兜底 —— 升级包漏传 config.php 时，
 // 旧版没有它，而 request() 的负缓存分支每条失败请求都会读一次，

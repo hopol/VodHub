@@ -229,7 +229,8 @@ VodHub/
 │   │   └── partials/        # vod_grid / vod_meta / vod_side
 │   └── <模板名>/             # 一套新模板通常只有 3 个文件
 │       ├── theme.json       # 元信息（名称、封面模式、列数）—— 也是「模板存在」的标记
-│       ├── header.php       # 顶栏 + 搜索框（与 default 的差异通常在这）
+│       ├── theme.json       # 主题差异配置：style（样式表）+ search_ph（搜索框文案）
+│       │                     # ⚠ 1.5.1 起模板**不再自带 header.php**，全站只有 default 那一份
 │       └── style.css        # 模板专属样式（CSS 变量在这里定义）
 ├── static/                  # 公共样式、app.js、hls.js（本地化）
 ├── docs/                   # 部署、配置、排障等文档（按「我想做什么」组织入口）

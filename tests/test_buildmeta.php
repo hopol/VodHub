@@ -258,4 +258,46 @@ t('buildMeta 缺字段的 detail 全部走安全默认值', static function (): 
     eq(1, $m['status_code']);
 });
 
+// ==================================================================
+// 十、1.5.1：封面查询与模板配置的回归判据
+// ==================================================================
+
+t('【1.5.1】coverUrl() 不再自己查库（每张封面 1 次 → 每次请求 1 次）', static function (): void {
+    $root = dirname(__DIR__);
+    $src  = (string) file_get_contents($root . '/includes/functions.php');
+
+    // 取 coverUrl 的函数体（到下一个 function 声明为止）
+    $start = strpos($src, 'function coverUrl');
+    $body  = substr($src, (int) $start, 1200);
+    ok(
+        !str_contains($body, 'prepare('),
+        'coverUrl() 里仍有 prepare —— 一个列表页 20 张封面就是 20 条完全相同的 SQL'
+        . '（整页只用一个数据源，sourceId 是同一个值）'
+    );
+    ok(
+        str_contains($body, 'sourceImgProxyOn('),
+        'coverUrl() 应改为调用 sourceImgProxyOn()（按 sourceId 进程内缓存）'
+    );
+});
+
+t('【1.5.1】sourceImgProxyOn() 的缓存是进程内的、且按 sourceId 分键', static function (): void {
+    $root = dirname(__DIR__);
+    $src  = (string) file_get_contents($root . '/includes/functions.php');
+    $start = strpos($src, 'function sourceImgProxyOn');
+    ok($start !== false, 'sourceImgProxyOn() 应存在');
+    $body = substr($src, (int) $start, 800);
+
+    ok(str_contains($body, 'static $on'), '必须用 static 局部变量做进程内缓存');
+    ok(str_contains($body, 'isset($on[$sourceId])'), '命中缓存应直接返回，不重查');
+    ok(str_contains($body, '$on[$sourceId] ='), '缓存必须按 sourceId 分键'
+       . '（一个请求内可能渲染多个源，见「全站」类页面）');
+
+    // ⚠ 判据的边界：缓存**不能**跨请求，否则后台改了「图片代理」
+    //   要等缓存过期才生效 —— 那正是 1.3.11「改数据源前台不变」那一类 bug。
+    ok(
+        !str_contains($body, 'apcu_') && !str_contains($body, 'file_put_contents'),
+        '缓存不得跨请求（APCu / 写文件都会让「改了设置前台不变」）'
+    );
+});
+
 finish();

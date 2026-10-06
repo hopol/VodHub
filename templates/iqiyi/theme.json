@@ -2,5 +2,7 @@
     "title": "爱奇艺风格",
     "description": "绿色主题，网格卡片悬浮遮罩，3:4 竖版封面",
     "cover_mode": "3:4",
-    "columns": 5
+    "columns": 5,
+    "style": "templates/iqiyi/style.css",
+    "search_ph": "搜索…"
 }

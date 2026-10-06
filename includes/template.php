@@ -47,6 +47,10 @@ function tplMeta(string $name): array {
         'description' => '',
         'cover_mode'  => 'tall',     // tall=竖图 2/3；wide=宽图 16/9
         'columns'     => 5,          // 列表页列数（PC 端）
+        // ↓ 1.5.1 起：原来「每套模板各留一份 header.php 只为了改这两处」，
+        //   现在收进 theme.json。少掉的 4 个 header.php 由 tplInclude() 回退 default。
+        'style'       => '',          // 主题自己的 style.css 路径（相对站点根）
+        'search_ph'   => '搜索影片名称…', // 搜索框 placeholder
     ];
     $file = tplRoot() . '/' . $name . '/theme.json';
     if (is_file($file)) {

@@ -1,7 +1,19 @@
 <?php
 /**
- * default 模板 - 公共头部
- * 变量：$siteTitle, $pageTitle, $sources, $currentSourceId
+ * default 模板 - 公共头部（**全站唯一一份**，1.5.1 起）
+ *
+ * 变量：$siteTitle, $pageTitle, $sources, $currentSourceId, $tplMeta
+ *
+ * 1.5.1 之前这里有 5 份几乎相同的 header.php，各模板只改两处：
+ * 主题样式表与搜索框 placeholder。现在这两处收进 theme.json 的
+ * `style` / `search_ph`，各模板的 header.php 已删除，由 tplInclude() 回退到本文件。
+ *
+ * ⚠ 本文件是那 4 套模板**唯一的头部来源** —— 改它等于改全站 5 套主题的头部。
+ *   要改某一套的主题外观，改它的 theme.json 或 style.css，不要复制本文件。
+ *
+ * ⚠ 三段注入的**顺序不能调**（CSS 层叠）：
+ *   ① 站点设置覆盖列数  ② 主题样式表  ③ 后台模板编辑器写入的 CSS 变量
+ *   ③ 在最后才能压过主题自己的 --xxx-columns，这正是「模板编辑器优先级最高」的实现。
  */
 ?>
 <!DOCTYPE html>
@@ -17,6 +29,11 @@
     <style>:root { --list-columns: <?= h((string) $tplMeta['adminColumns']) ?>; }</style>
     <?php endif; ?>
     <!-- 否则不注入，交给模板自己的 --xxx-columns（由后台"模板编辑"写入）作为回退值 -->
+    <?php if (!empty($tplMeta['style'])): ?>
+    <!-- 主题样式表（theme.json 的 style 键）。必须在①之后、③之前：它要压过
+         站点设置的列数，但又要被后台模板编辑器写入的变量压过。 -->
+    <link rel="stylesheet" href="<?= h($tplMeta['style']) ?>">
+    <?php endif; ?>
     <?php if (!empty($tplMeta['vars'])): ?>
     <!-- 后台模板编辑器写入的 CSS 变量覆盖 -->
     <style>:root { <?php foreach ($tplMeta['vars'] as $k => $v): echo h($k), ':', h($v), ';'; endforeach; ?> }</style>
@@ -30,7 +47,7 @@
             <span class="brand-text"><?= h($siteTitle) ?></span>
         </a>
         <form class="search-box" action="search.php" method="get" role="search">
-            <input type="text" name="wd" placeholder="搜索影片名称…"
+            <input type="text" name="wd" placeholder="<?= h($tplMeta['search_ph'] !== '' ? $tplMeta['search_ph'] : '搜索…') ?>"
                    value="<?= h($_GET['wd'] ?? '') ?>" autocomplete="off">
             <button type="submit" aria-label="搜索">🔍</button>
         </form>

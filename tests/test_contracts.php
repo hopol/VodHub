@@ -761,13 +761,20 @@ t('lowpower.md 的缓存上限说法与代码一致（不再是「一个数」�
 
 group('契约 5：模板去重的结构约束');
 
-/** 每套模板必须有、且**不允许**被删的文件 */
-const TPL_MUST_HAVE = ['theme.json', 'header.php'];
+/**
+ * 每套模板必须有、且**不允许**被删的文件。
+ *
+ * ⚠ 1.5.1 起只剩 theme.json —— header.php 已**全局唯一**（templates/default/header.php）。
+ *   当初每套模板各留一份 header.php，只为了改两处：主题样式表与搜索框 placeholder。
+ *   那两处现在收进 theme.json 的 `style` / `search_ph`，
+ *   缺失时 tplInclude() 回退 default（见 includes/template.php）。
+ */
+const TPL_MUST_HAVE = ['theme.json'];
 
 /** 允许各模板与 default 不同、因而必须自带副本的文件 */
 const TPL_MAY_DIFFER = ['bilibili' => ['list.php', 'partials/vod_grid.php']];
 
-t('每套模板仍带着 theme.json 与 header.php（缺任何一个模板就废了）', static function () use ($root): void {
+t('每套模板仍带着 theme.json（缺了整套模板静默失效）', static function () use ($root): void {
     $bad = [];
     foreach (array_keys(listTemplates()) as $tpl) {
         foreach (TPL_MUST_HAVE as $f) {
@@ -778,11 +785,112 @@ t('每套模板仍带着 theme.json 与 header.php（缺任何一个模板就废
     }
     eq([], $bad,
         "这些模板缺少必需文件：\n  " . implode("\n  ", $bad)
-        . "\n\ntheme.json 现在是「这个模板存在」的标记（tplExists() 判据已改成查它）——"
-        . "\nheader.php 则是每套主题的配色与搜索框差异所在。"
+        . "\n\ntheme.json 现在是「这个模板存在」的标记（tplExists() 判据已改成查它），"
+        . "\n它同时承载主题差异配置：style（主题样式表）与 search_ph（搜索框 placeholder）。"
         . "\n\n⚠ 特别注意 theme.json：**删了它，整套模板会静默失效且不报错**"
         . "（resolveTemplate() 回退 default、模板编辑器拒绝保存）。"
     );
+});
+
+t('模板头部只有一份：主题差异收在 theme.json，不许长回 header.php', static function () use ($root): void {
+    // 1.5.1：iqiyi/douban/netflix/bilibili 各删了一份 header.php，
+    // 它们与 default 的差别只有两处 —— 主题样式表 + 搜索框 placeholder。
+    // 这两处现在由 theme.json 的 style / search_ph 承载。
+    $bad = [];
+    foreach (array_keys(listTemplates()) as $tpl) {
+        if ($tpl === 'default') {
+            continue;
+        }
+        if (is_file(tplRoot() . '/' . $tpl . '/header.php')) {
+            $bad[] = $tpl . '/header.php';
+        }
+    }
+    eq([], $bad,
+        "这些模板又长出了自己的 header.php：\n  " . implode("\n  ", $bad)
+        . "\n\n头部现在**只有 templates/default/header.php 一份**，"
+        . "主题差异走 theme.json 的 style / search_ph。"
+        . "\n多一份就等于多一处要同步的地方 —— 本项目 1.3.12 删过 31 个同类的重复文件。");
+});
+
+t('每套主题的 theme.json 都声明了自己的样式表与搜索框文案', static function () use ($root): void {
+    $bad = [];
+    foreach (array_keys(listTemplates()) as $tpl) {
+        $meta = tplMeta($tpl);
+        if ($tpl !== 'default' && trim((string) ($meta['style'] ?? '')) === '') {
+            $bad[] = $tpl . ' 缺 style';
+        }
+        if (trim((string) ($meta['search_ph'] ?? '')) === '') {
+            $bad[] = $tpl . ' 缺 search_ph';
+        }
+    }
+    eq([], $bad,
+        "这些主题的 theme.json 缺字段：\n  " . implode("\n  ", $bad)
+        . "\n\n缺 style 会让该主题**丢了自己的配色**（只剩 static/style.css），"
+        . "而且不报错 —— 页面照常渲染，只是变成默认主题的样子。");
+});
+
+t('没有定义了却没人调用的函数（1.5.1 起加了这条）', static function () use ($root): void {
+    // 起因：cacheSize() 从 1.0.0 就没人调用，vhSetting() 从 1.3.3 起没人调用，
+    // 两个都是**写完就忘了**的那种死代码 —— 不会让任何测试变红，
+    // 因为**没有任何函数的行为依赖它们**。
+    //
+    // 判据是**扫出来的**（遍历全仓库的函数声明，再逐个找调用点），
+    // 不是列出来的 —— 否则新增第 3 个死函数时不会被检查，测试照样全绿。
+    $skip = [
+        // adminAction* 由 dispatcher 动态派发（admin.php 里拼函数名后 call），
+        // 源码里找不到字面调用点，是误报而非死代码。
+        'adminActionAddSource', 'adminActionUpdateSource', 'adminActionDeleteSource',
+        'adminActionTestSource', 'adminActionAccessSettings', 'adminActionChangeAdminPassword',
+        'adminActionSiteSettings', 'adminActionAddGroup', 'adminActionUpdateGroup',
+        'adminActionDeleteGroup', 'adminActionDetectImgHost', 'adminActionToggleSource',
+        'adminActionSiteTemplate', 'adminActionResetTemplate', 'adminActionClearCache',
+        'adminActionImportConfig',
+    ];
+    $names = $skip;
+    $it = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS)
+    );
+    foreach ($it as $f) {
+        $p = (string) $f;
+        if (!preg_match('/\.php$/', $p) || str_contains($p, '/tests/')) {
+            continue;
+        }
+        if (preg_match_all('/^\s*function\s+(\w+)\s*\(/m', (string) file_get_contents($p), $m)) {
+            foreach ($m[1] as $fn) {
+                $names[] = $fn;
+            }
+        }
+    }
+    // 所有非测试代码拼成一份，统计每个函数名的出现次数
+    $all   = '';
+    $files = [];
+    foreach (new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS)
+    ) as $f) {
+        $p = (string) $f;
+        if (!preg_match('/\.php$/', $p) || str_contains($p, '/tests/')) {
+            continue;
+        }
+        $files[] = $p;
+    }
+    foreach ($files as $p) {
+        $all .= (string) file_get_contents($p);
+    }
+    $dead = [];
+    foreach (array_unique($names) as $fn) {
+        if (in_array($fn, $skip, true)) {
+            continue;
+        }
+        // 「定义处」也是一次出现，所以出现 1 次 = 只有定义、没有调用
+        if (preg_match_all('/(?<![\w$>:])' . preg_quote($fn, '/') . '\s*\(/', $all) <= 1) {
+            $dead[] = $fn;
+        }
+    }
+    eq([], $dead,
+        "这些函数定义了但**全项目没有任何地方调用**：\n  " . implode("\n  ", $dead)
+        . "\n\n死代码不会让任何测试变红，因为没有任何函数的行为依赖它 ——"
+        . "\n这正是它能活很久的原因（cacheSize() 从 1.0.0 活到 1.5.1）。"
+        . "\n处理方式：接上真实的读取点，或者删掉。别留着假装有防护。");
 });
 
 t('没有模板重新长出与 default 逐字节相同的文件（那正是要消灭的重复）', static function () use ($root): void {

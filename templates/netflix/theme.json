@@ -2,5 +2,7 @@
     "title": "Netflix 风格",
     "description": "红色主题，网格卡片悬浮放大，竖版封面 2:3",
     "cover_mode": "2:3",
-    "columns": 4
+    "columns": 4,
+    "style": "templates/netflix/style.css",
+    "search_ph": "搜索…"
 }

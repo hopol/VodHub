@@ -301,19 +301,43 @@ function coverUrl(?string $pic, int $sourceId = 0): string {
         return 'static/img/no-cover.svg';
     }
 
-    if ($sourceId > 0) {
-        $stmt = db()->prepare('SELECT img_proxy FROM sources WHERE id = ?');
-        $stmt->execute([$sourceId]);
-        $row = $stmt->fetch();
-        if ($row && (int) $row['img_proxy'] === 1) {
-            $local = imgCacheHit($pic);
-            if ($local !== null) {
-                return $local;   // ← 已本地化：Apache 静态直出，0 EP
-            }
-            return 'img.php?u=' . rawurlencode($pic) . '&s=' . $sourceId;
+    if ($sourceId > 0 && sourceImgProxyOn($sourceId)) {
+        $local = imgCacheHit($pic);
+        if ($local !== null) {
+            return $local;   // ← 已本地化：Apache 静态直出，0 EP
         }
+        return 'img.php?u=' . rawurlencode($pic) . '&s=' . $sourceId;
     }
     return $pic;
+}
+
+/**
+ * 该数据源的前台封面是否走 img.php 代理。
+ *
+ * ⚠ 为什么要单独抽出来并**按 id 缓存**：`coverUrl()` 是**每张封面调一次**的，
+ *   而一个列表页有 20 张（实测），且这 20 次的 `$sourceId` 是**同一个值** ——
+ *   整页只用一个数据源。所以原来那版直接在 coverUrl() 里 prepare+execute，
+ *   等于**同一个答案查 20 遍**。实测一个列表页 20 条完全相同的 SQL。
+ *
+ * 缓存是 PHP 的 `static` 局部变量，**生命周期 = 单次请求**：
+ * 跨请求自动失效，所以后台改了「图片代理」开关，下一次请求立刻生效，
+ * 不存在「改了设置要等缓存过期」的问题 —— 那类 bug 本项目栽过
+ * （见 1.3.11「改数据源前台不变」）。
+ *
+ * ⚠ 这里**不能**改成跨请求的静态缓存（如 APCu 或写文件）：
+ *   那才会引入上面那个「改了设置前台不变」的类别。
+ */
+function sourceImgProxyOn(int $sourceId): bool {
+    static $on = [];
+    if (isset($on[$sourceId])) {
+        return $on[$sourceId];
+    }
+    $stmt = db()->prepare('SELECT img_proxy FROM sources WHERE id = ?');
+    $stmt->execute([$sourceId]);
+    $row = $stmt->fetch();
+    // 查不到（源被删/停用）按「不代理」处理，与改动前的行为一致
+    $on[$sourceId] = ($row && (int) $row['img_proxy'] === 1);
+    return $on[$sourceId];
 }
 
 /** 按分类 ID 查分类名 */
@@ -324,23 +348,6 @@ function typeName(array $types, int $typeId): string {
         }
     }
     return '全部';
-}
-
-/** 缓存目录占用大小（后台展示用） */
-function cacheSize(): string {
-    $bytes = 0;
-    foreach ((glob(CACHE_DIR . '/*') ?: []) as $f) {
-        if (is_file($f)) {
-            $bytes += filesize($f);
-        }
-    }
-    if ($bytes < 1024) {
-        return $bytes . ' B';
-    }
-    if ($bytes < 1048576) {
-        return round($bytes / 1024, 1) . ' KB';
-    }
-    return round($bytes / 1048576, 1) . ' MB';
 }
 
 /**
