@@ -168,6 +168,6 @@ SVG 仍可经 `img.php` 实时返回，只是不落盘。
 
 - `includes/client.php` 的上游请求也开着 `FOLLOWLOCATION`。
   但它请求的是**管理员自己配置的数据源**（威胁模型不同），风险等级低一档，本次未改。
-- **三处 `CURLOPT_SSL_VERIFYPEER => false`**（`img.php` / `includes/enrich.php` /
-  `includes/client.php`）尚未改为可配置。这是**已知待办项**，
-  与本次 SSRF 修复叠加时会放大风险，建议下一版处理。
+- **`img.php` 与 `includes/client.php` 的 `CURLOPT_SSL_VERIFYPEER => false`**
+  尚未改为可配置。这是**已知待办项**，与本次 SSRF 修复叠加时会放大风险，建议下一版处理。
+  （审计当时还有第三处 `includes/enrich.php`，该文件已随 1.5.0 的模型层移除。）

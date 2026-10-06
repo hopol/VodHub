@@ -8,13 +8,12 @@
  *
  * 导出的是「配置」，不是「数据」：
  *   导出 settings / groups / sources；
- *   不导出 enrich 归一化记录、runtime/cache 接口缓存 —— 那些是可重建的缓存。
+ *   不导出 runtime/cache 接口缓存 —— 那是可重建的缓存。
  */
 
 require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/functions.php';
-require_once __DIR__ . '/enrich.php';
 require_once __DIR__ . '/pagecache.php';   // 清页面静态缓存 c/
 require_once __DIR__ . '/imgcache.php';    // 清图片本地缓存 static/imgcache/
 
@@ -23,7 +22,7 @@ const CONFIG_FORMAT   = 'vodhub-config';
 const CONFIG_VERSION  = 1;
 
 /** 敏感键：默认不导出，只有导出时显式勾选才带上 */
-const CONFIG_SECRET_KEYS = ['admin_password', 'access_password', 'enrich_api_key'];
+const CONFIG_SECRET_KEYS = ['admin_password', 'access_password'];
 
 /** 导入时绝不覆盖的键 —— schema 由 dbInit() 的迁移负责，改了会让升级逻辑错乱 */
 const CONFIG_DENY_KEYS = ['schema_version'];
@@ -49,7 +48,6 @@ function cacheStats(): array {
         'files'  => $files,
         'bytes'  => $bytes,
         'size'   => bytesHuman($bytes),
-        'enrich' => enrichCacheCount(),
     ];
 }
 
@@ -146,13 +144,12 @@ function opcacheReset(): array {
  * 清理系统缓存。
  *
  * @param bool $api      清 runtime/cache/*.json（接口响应）
- * @param bool $enrich   清 enrich 表（字段归一化记录）
  * @param bool $opcache  重置 PHP 脚本缓存
  * @param bool $page     清 c/ 页面静态缓存（极致低功耗 · 支柱一）
  * @param bool $img      清 static/imgcache/ 图片本地缓存（支柱二）
  * @return string 汇报消息
  */
-function clearSystemCache(bool $api, bool $enrich, bool $opcache,
+function clearSystemCache(bool $api, bool $opcache,
                           bool $page = false, bool $img = false): string {
     $parts = [];
 
@@ -183,11 +180,6 @@ function clearSystemCache(bool $api, bool $enrich, bool $opcache,
         }
         $parts[] = '接口缓存 ' . $n . ' 个文件（' . bytesHuman($bytes) . '）'
                  . ($neg ? ' + 负缓存 ' . $neg . ' 个' : '');
-    }
-
-    if ($enrich) {
-        enrichClearCache();
-        $parts[] = '归一化记录已清';
     }
 
     if ($page) {

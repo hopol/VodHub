@@ -16,7 +16,6 @@ require_once __DIR__ . '/auth.php';
 require_once __DIR__ . '/client.php';
 require_once __DIR__ . '/functions.php';
 require_once __DIR__ . '/template.php';
-require_once __DIR__ . '/enrich.php';
 require_once __DIR__ . '/config-io.php';   // 系统缓存清理 + 配置导入导出
 
 /** action → 处理函数映射表 */
@@ -201,10 +200,7 @@ function adminActionSiteSettings(array $post): string {
         if ($cols > 8) { $cols = 8; }
         setSetting('list_columns', (string) $cols);
 
-        // 字段智能归一化开关（未提交的表单按关闭处理，与其他布尔项一致）
-        setSetting('enrich_enabled', intval($post['enrich_enabled'] ?? 0) === 1 ? '1' : '0');
-
-        // 容量档位：决定各缓存目录的硬上限（1 GB 档 132 MB / 5 GB 档 387 MB）。
+        // 容量档位：决定各缓存目录的硬上限（1 GB 档 105 MB / 5 GB 档 340 MB）。
         // 探测不可靠的主机（disk_total_space 返回整机磁盘）必须手动指定。
         $tier = (string) ($post['lowpower_tier'] ?? 'auto');
         if (!in_array($tier, ['auto', 'compact', 'standard'], true)) {
@@ -377,7 +373,6 @@ function adminActionResetTemplate(array $post): string {
 function adminActionClearCache(array $post): string {
         return clearSystemCache(
             intval($post['clear_api'] ?? 0) === 1,
-            intval($post['clear_enrich'] ?? 0) === 1,
             intval($post['clear_opcache'] ?? 0) === 1,
             intval($post['clear_page'] ?? 0) === 1,
             intval($post['clear_img'] ?? 0) === 1

@@ -212,7 +212,6 @@ VodHub/
 ├── config.php                                         # 全局配置（PHP 版本保护 + 路径常量）
 ├── includes/                # 全部业务逻辑（站点代码零引用这里以外的东西）
 │   ├── fields.php           # 字段层：确定性解析（不联网，最核心的一层）
-│   ├── enrich.php           # TypeSafe 归一化（唯一的模型层，异步 + 落库缓存）
 │   ├── guard.php            # 护栏：磁盘水位 + GC + 限流 + 环境体检
 │   ├── client.php           # 上游接口客户端（4 层缓存 / 负缓存 / 整页墙钟）
 │   ├── pagecache.php        # 页面静态化（时间桶 + Apache 直出）

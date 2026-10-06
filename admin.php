@@ -52,7 +52,6 @@ require_once __DIR__ . '/includes/auth.php';
 require_once __DIR__ . '/includes/client.php';
 require_once __DIR__ . '/includes/functions.php';
 require_once __DIR__ . '/includes/template.php';
-require_once __DIR__ . '/includes/enrich.php';
 require_once __DIR__ . '/includes/config-io.php';   // 系统缓存 + 配置导入导出
 require_once __DIR__ . '/includes/admin-actions.php';
 
@@ -124,7 +123,6 @@ $accessEnabled = setting('access_enabled') === '1';
 $siteTitle = setting('site_title', APP_NAME);
 $templates = listTemplates();
 $siteTemplate = setting('site_template', 'default');
-$enrichEnabled = setting('enrich_enabled', '1') === '1';
 $editTpl = trim((string) ($_GET['tpl'] ?? $siteTemplate));
 if (!tplExists($editTpl)) {
     $editTpl = 'default';
@@ -755,13 +753,9 @@ $editingGroup = $editGid > 0 ? getGroup($editGid) : null;
                     <option value="standard" <?= $curTier === 'standard' ? 'selected' : '' ?>>标准（5 GB 及以上空间）</option>
                 </select>
                 <small class="muted">
-                    决定页面缓存、图片缓存、接口缓存的硬上限：紧凑档合计约 132 MB，标准档约 387 MB。
+                    决定页面缓存、图片缓存、接口缓存的硬上限：紧凑档合计约 105 MB，标准档约 340 MB。
                     <b>磁盘 ≤1 GB 请选「紧凑」</b> —— 不少主机的自动探测拿到的是整机磁盘而不是你的配额。
                 </small>
-            </label>
-            <label class="field field-check">
-                <input type="checkbox" name="enrich_enabled" value="1" <?= $enrichEnabled ? 'checked' : '' ?>>
-                <span>播放页字段智能归一化（TypeSafe）</span>
             </label>
             <label class="field">
                 <span>首页补拉预算（秒）</span>
@@ -778,13 +772,6 @@ $editingGroup = $editGid > 0 ? getGroup($editGid) : null;
                     拉不完的下次访问继续，已成功的都已落盘、进度不丢。
                     <b>先确认你的网关超时</b>：3 秒超时的主机请选 ≤2 秒，否则照样 502；
                     选 0 = 不自动补拉，首页只显示本地已缓存的分类（没有就提示「无法获取分类」）。
-                </small>
-            </label>
-            <label class="field field-wide">
-                <small class="muted">
-                    把地区/语言/类型/更新状态这类「同一份数据有多种写法」的字段统一成规范值，
-                    并判定内容分级。首次打开某影片时请求一次（约 1 秒），结果缓存 30 天；
-                    关闭后全部按上游原始值展示，页面照常工作。
                 </small>
             </label>
             <input type="hidden" name="csrf" value="<?= csrfToken() ?>">
@@ -876,7 +863,7 @@ $editingGroup = $editGid > 0 ? getGroup($editGid) : null;
             <?php else: ?>
                 <b>探测不可用</b>（见上方说明）
             <?php endif; ?>；
-            容量档位 <b><?= (($lp['caps']['base'] ?? '') === 'compact') ? '紧凑（约 132 MB）' : '标准（约 387 MB）' ?></b>
+            容量档位 <b><?= (($lp['caps']['base'] ?? '') === 'compact') ? '紧凑（约 105 MB）' : '标准（约 340 MB）' ?></b>
             <?php if (($lp['caps']['probe'] ?? 'ok') !== 'ok'): ?>
                 · 水位<b>未收紧</b>（探测不可用）
             <?php else: ?>
@@ -910,7 +897,6 @@ $editingGroup = $editGid > 0 ? getGroup($editGid) : null;
         <h3 class="admin-subtitle">🧹 系统缓存</h3>
         <p class="muted">
             接口缓存 <b><?= $cacheStat['files'] ?> 个文件 / <?= h($cacheStat['size']) ?></b>；
-            字段归一化记录 <b><?= h((string) $cacheStat['enrich']) ?></b> 条；
             列表/详情 <?= intval(CACHE_TTL / 60) ?> 分钟、分类 <?= intval(CACHE_TTL_TYPE / 3600) ?> 小时，
             上游故障时自动降级用旧缓存。
         </p>
@@ -920,7 +906,7 @@ $editingGroup = $editGid > 0 ? getGroup($editGid) : null;
 
         <form class="admin-form" method="post" action="admin.php"
               onsubmit="return confirm('确定清理勾选的缓存吗？\n'
-                  + '· 接口缓存 / 归一化记录：清掉后下次访问要重新请求上游，\n'
+                  + '· 接口缓存：清掉后下次访问要重新请求上游，\n'
                   + '  首页可能变慢几秒（每个源各撞一次超时），上游不通时会显示「无法获取分类」\n'
                   + '· 页面缓存 / 图片缓存：清掉后下次访问重新生成，只是慢一点\n'
                   + '· OPcache：上传文件后没变化时才需要勾，否则别勾')">
@@ -928,10 +914,6 @@ $editingGroup = $editGid > 0 ? getGroup($editGid) : null;
             <label class="field-check">
                 <input type="checkbox" name="clear_api" value="1">
                 <span>接口响应缓存（<code>runtime/cache/*.json</code>）</span>
-            </label>
-            <label class="field-check">
-                <input type="checkbox" name="clear_enrich" value="1">
-                <span>字段归一化记录（<code>enrich</code> 表）</span>
             </label>
             <label class="field-check">
                 <input type="checkbox" name="clear_opcache" value="1" checked>
@@ -952,7 +934,7 @@ $editingGroup = $editGid > 0 ? getGroup($editGid) : null;
         <h3 class="admin-subtitle">📦 配置导入导出</h3>
         <p class="muted">
             导出的是<b>配置</b>（站点设置、模板样式、分组、数据源），
-            <b>不含</b>接口响应缓存与归一化记录 —— 那些是可重建的缓存。
+            <b>不含</b>接口响应缓存 —— 那是可重建的缓存。
             密码哈希与 API 密钥<b>默认不导出</b>，需要迁移密码时再勾选。
         </p>
 

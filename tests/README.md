@@ -10,7 +10,6 @@
 
 ```
 https://你的站点/tests/run.php               跑全套
-https://你的站点/tests/run.php?f=enrich     只跑富化层
 https://你的站点/tests/test_fields.php      单个文件
 ```
 
@@ -22,7 +21,6 @@ https://你的站点/tests/test_fields.php      单个文件
 ```bash
 php tests/run.php              # 跑全部（约 300 ms）
 php tests/run.php fields       # 只跑文件名含 fields 的
-php tests/run.php enrich       # 只跑富化层
 php tests/run.php buildmeta    # 只跑元数据组装
 php tests/run.php admin        # 只跑后台动作
 
@@ -138,8 +136,7 @@ php tests/ci-check.php
 |------|-----:|------|
 | `bootstrap.php` | — | 断言框架（`t` / `eq` / `isNull` / `hasValue` …）+ 数据目录隔离 |
 | `test_fields.php` | 80 | 字段层纯函数：文本清洗、多值拆分、日期、评分、时长、播放地址、归一化映射 |
-| `test_enrich.php` | 35 | 富化合并层：代码命中 / 模型命中 / 置信度回退 / 缺答案 四态 |
-| `test_buildmeta.php` | 31 | `buildMeta()` 组合行为 + 「enrich 缺席也能独立工作」契约 |
+| `test_buildmeta.php` | 30 | `buildMeta()` 组合行为 + 「映射表没命中时原样展示上游写法」 |
 | `test_admin_actions.php` | 12 | 后台动作表结构 + 表单覆盖率 + 500 白屏事故的回归防护 |
 | `test_security.php` | 41 | 安全红线：SSRF 逐跳复检 / SVG 不落盘 / Cookie 属性 / TLS / CLI-only 符号 |
 | `test_contracts.php` | 36 | **契约测试**：跨文件约定（不是函数行为）。1.3.11 起 |
@@ -167,7 +164,7 @@ php tests/ci-check.php
 |---|---|---|---|
 | 1 | 写 sources/groups 必须失效缓存 | 「改数据源前台最长 1 小时不变」 | 2026-10-04 复查发现的 P0-1 |
 | 2 | 新增 admin action 必须登记 | 「加了按钮忘了让它失效」 | — |
-| 3 | 定义了的容量上限必须被用上 | 「定义了护栏但忘了接电」 | **`enrich_days` / `small` 两个死键**（P1-2 与一处同类） |
+| 3 | 定义了的容量上限必须真的被用上 | 「定义了护栏但忘了接电」 | 判据扫出「只写不读」的上限键（1.5.0 前抓到过 `enrich_days`） |
 | 4 | 文档「自动生效」类承诺要有代码路径 | 「照文档行事却等不到结果」 | `lowpower.md` 那句半错的说明 |
 | 5 | 模板去重的结构约束 | 「改一个 bug 要改 5 处」 | 去重时的两处静默失败（`__DIR__` 硬路径、`tplExists` 判据） |
 | 6 | 页面缓存总量闸 | 「定义了的护栏没接电」 | 本版实现时自己踩的「同一把尺子量两次」 |
@@ -182,7 +179,8 @@ php tests/ci-check.php
 
 ```php
 t('置信度低于 0.7 返回 null（让调用方回退原始字段）', static function (): void {
-    isNull(enrichChoiceLabel(['choice' => 'drama', 'confidence' => 0.59], $LBL));
+    // 例：某个只有 0.59 的判断不该被采用
+    isNull(pickAbove(['drama' => 0.59, 'comedy' => 0.41], 0.7));
 });
 ```
 
@@ -204,8 +202,8 @@ isNull(normalizeRegions('火星'));   // 看不懂 → 交给模型
 ### 3. 边界值要单独测
 
 ```php
-eq('剧情', enrichChoiceLabel(['choice' => 'drama', 'confidence' => 0.7], $LBL));  // 恰好达标：采用
-isNull(enrichChoiceLabel(['choice' => 'drama', 'confidence' => 0.69], $LBL));     // 差 0.01：回退
+eq('drama', pickAbove(['drama' => 0.7, 'comedy' => 0.2], 0.7));   // 恰好达标：采用
+isNull(pickAbove(['drama' => 0.69, 'comedy' => 0.1], 0.7));       // 差 0.01：回退
 ```
 
 `>= 0.7` 改成 `> 0.7` 这种改动，只有边界测试能抓住。
@@ -223,9 +221,8 @@ ok(preg_match('/(^|[^\w$])global\s+\$_ADMIN_ACTION_MAP\s*;/', (string) $body), .
 ### 5. 缺数据的行为也要测
 
 ```php
-t('【契约】enrich 缺席时 adult 恒为 0 且不误报', static function (): void {
-    $m = buildMeta(sampleDetail(), 1, [], null);
-    ok($m['adult_warn'] === false, '模型缺席时绝不能误标成人内容');
+t('【1.5.0】地区映射表没命中时原样展示上游写法，不留空', static function (): void {
+    eq('北美', buildMeta(sampleDetail(['vod_area' => '北美']), 1)['region']);
 });
 ```
 
@@ -246,7 +243,7 @@ register_shutdown_function(/* 删临时目录 */);
 ## 已记录的待修项
 
 `normalizeRemarks(string $raw)` 的签名不接受 `null`，
-而 `enrich.php` 与 `buildMeta()` 两处调用方都靠 `(string)` 强转兜住。
+而 `buildMeta()` 这处调用方靠 `(string)` 强转兜住。
 **当前线上不会炸**，但任何一处漏了强转就是整站 500。
 
 已在 `test_fields.php` 里如实记录当前行为并标注，等第二阶段与

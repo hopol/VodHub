@@ -64,7 +64,7 @@
 require_once __DIR__ . '/bootstrap.php';
 
 // 契约 2 要读 $_ADMIN_ACTION_MAP（定义在 admin-actions.php 的顶层全局作用域）。
-// ⚠ 加载它 = 把 client.php / template.php / enrich.php / config-io.php 一并引入，
+// ⚠ 加载它 = 把 client.php / template.php / config-io.php 一并引入，
 //   但**不会执行任何 action**（那些只在 adminHandlePost() 里被调用）——
 //   所以这里没有出站请求、没有写库，可以在站点上安全跑。
 require_once __DIR__ . '/../includes/admin-actions.php';
@@ -582,6 +582,8 @@ t('会失效名单里的 action，处理函数确实能到达失效路径', stat
 //       唯一的 DELETE 在 enrich.php，只能由后台手动触发。
 //       按 100 源 × 每天 200 部新片 × 30 天 = 60 万行 ≈ 300 MB，
 //       在 1 GB 盘上占三成，而文档承诺的总预算是 132 MB。
+//       （1.5.0 已连同整个 enrich 层移除，本条判据本身保留 ——
+//        它当初抓出的正是「只写不读」这一类，与 enrich 无关。）
 //
 //    ② `small` 键同样只写不读（它与 `base` 是同一个信息的两个出口，
 //       `base` 有读点所以没人发现 `small` 是死的）。
@@ -590,9 +592,8 @@ t('会失效名单里的 action，处理函数确实能到达失效路径', stat
 //  它不会让任何测试变红，因为**没有任何函数的行为依赖它** ——
 //  这正是它能活这么久的原因，也是契约测试唯一能覆盖的那一类。
 //
-//  修法（本版一并修掉，否则本契约上线即红）：
-//    ① 给 enrich 表加 GC（按天 + 按行数双闸）与 created_at 索引（schema v6）；
-//    ② 删掉死的 `small` 键，或让它被真的读取。
+//  判据是**扫出来的**（解析 guardCaps() 的返回键，再逐个找读取点），
+//  所以将来新增任何上限键都自动纳入检查，不需要改这里的清单。
 
 group('契约 3：定义了的容量上限必须真的被用上');
 
@@ -662,38 +663,9 @@ t('guardCaps() 里每个键都有至少一个读取点', static function () use 
         "guardCaps() 定义了这些上限，但全仓库**没有任何地方读取它们**：\n  " . implode("\n  ", $dead)
         . "\n\n已确认有读取点的：" . implode('、', $live)
         . "\n\n一个只写不读的上限等于没有上限 —— 上层以为有护栏，实际没有。"
-        . "\n这正是 enrich 表能长到 300 MB 的原因（enrich_days 从未被读取，"
-        . "\nenrich 表因此一直没有自动清理）。\n"
+        . "\n这类上限曾经真的出事过：enrich_days 从未被读取，"
+        . "\n那张表因此一直没有自动清理，一路涨到约 300 MB。\n"
         . "处理方式：要么给它接上真实的读取点，要么把这个键删掉（别留一个假护栏）。"
-    );
-});
-
-t('enrich 表有自动清理（enrich_days 必须真的被用上）', static function () use ($root): void {
-    $gc = t_contract_code((string) file_get_contents($root . '/includes/guard.php'));
-    ok(
-        preg_match('/\[[\'"]enrich_days[\'"]\]/', $gc)
-            && preg_match('/function\s+guardGcEnrich\b/', $gc),
-        'enrich_days 必须被 guardGcAll() 的某一步真的用上 —— '
-        . '1.3.11 之前它只有赋值没有读取点，enrich 表因此完全无自动清理，'
-        . '正常用能涨到约 300 MB（1 GB 盘的 30%）'
-    );
-    // GC 还得真的挂在 guardGcAll() 的步骤表里，否则定义了函数也等于没跑
-    $all = t_contract_body($gc, 'guardGcAll');
-    ok($all !== null, '应能找到 guardGcAll()');
-    ok(
-        str_contains((string) $all, 'guardGcEnrich('),
-        'guardGcEnrich() 必须出现在 guardGcAll() 的步骤表里 —— '
-        . '定义了却不调用，等于没有这条清理规则'
-    );
-});
-
-t('enrich 表按 created_at 建了索引（否则按时间删除是全表扫描）', static function () use ($root): void {
-    $db = t_contract_code((string) file_get_contents($root . '/includes/db.php'));
-    ok(
-        preg_match('/idx_enrich_created/', $db),
-        'enrich 表需要 CREATE INDEX idx_enrich_created ON enrich(created_at) —— '
-        . '读取路径（点查 + IN）靠主键已经够了，但按时间删除没有索引就是全表扫描。'
-        . '这个索引随 DB_SCHEMA_VERSION 6 的迁移一起建。'
     );
 });
 
@@ -952,7 +924,7 @@ t('page_total_bytes 被 guardGcAll() 真的传下去了', static function () use
     ok(
         preg_match('/\$caps\[\s*[\'"]page_total_bytes[\'"]\s*\]/', $gc),
         'page_total_bytes 必须被 guardGcAll() 读到并传给 guardGcPageBuckets() —— '
-        . '定义了就没人用的话，它就是 1.3.10 那个 enrich_days 的翻版'
+        . '定义了就没人用的话，它就是当年 enrich_days 的翻版'
     );
 });
 

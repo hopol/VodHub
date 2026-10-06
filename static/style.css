@@ -606,7 +606,8 @@ code {
     word-break: break-word;
 }
 
-/* 内容提示：仅当模型判定为成人向时出现（includes/enrich.php 的 is_adult）。
+/* 警示类 chip（目前用于「已下架」）。1.5.0 之前还用于「⚠ 成人内容」，
+   那一条随模型归一化层一并移除，但这条规则留着 ——
    用 .chip.chip-warn 提高优先级，避免被各主题自己的 .chip 规则盖掉。 */
 .chip.chip-warn {
     background: rgba(224, 86, 86, .16);

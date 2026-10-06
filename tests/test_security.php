@@ -349,13 +349,13 @@ t('.htaccess 仍只含 FileInfo 类指令', static function () use ($root): void
 });
 
 // ==================================================================
-// 五、TLS 证书校验（1.3.4 修：此前三处写死 VERIFY=false）
+// 五、TLS 证书校验（1.3.4 修：此前写死 VERIFY=false；1.5.0 移除模型层后剩两处）
 // ==================================================================
 
 group('TLS：默认校验证书，降级须显式');
 
-t('三处出站请求都不再写死 VERIFY=false', static function (): void {
-    foreach (['img.php', 'includes/enrich.php', 'includes/client.php'] as $f) {
+t('两处出站请求都不再写死 VERIFY=false', static function (): void {
+    foreach (['img.php', 'includes/client.php'] as $f) {
         $src = t_code($f);
         ok(
             !preg_match('/CURLOPT_SSL_VERIFYPEER\s*=>\s*false/', $src),
@@ -368,8 +368,8 @@ t('三处出站请求都不再写死 VERIFY=false', static function (): void {
     }
 });
 
-t('三处都改用 TLS_VERIFY 常量', static function (): void {
-    foreach (['img.php', 'includes/enrich.php', 'includes/client.php'] as $f) {
+t('两处都改用 TLS_VERIFY 常量', static function (): void {
+    foreach (['img.php', 'includes/client.php'] as $f) {
         $src = t_code($f);
         ok(
             str_contains($src, 'CURLOPT_SSL_VERIFYPEER => TLS_VERIFY'),
@@ -381,7 +381,7 @@ t('三处都改用 TLS_VERIFY 常量', static function (): void {
 t('SSL_VERIFYHOST 用 2/0 而非 true/false', static function (): void {
     // curl 的 VERIFYHOST 语义特殊：1 = 校验，2 = 校验且通配符，
     // 0 = 不校验。传 true 会被当成 1（不校验通配符），虽不出错但不严谨。
-    foreach (['img.php', 'includes/enrich.php', 'includes/client.php'] as $f) {
+    foreach (['img.php', 'includes/client.php'] as $f) {
         ok(
             str_contains(t_code($f), 'CURLOPT_SSL_VERIFYHOST => TLS_VERIFY ? 2 : 0'),
             "{$f} 的 SSL_VERIFYHOST 应为 'TLS_VERIFY ? 2 : 0'"
@@ -493,7 +493,7 @@ t('【关键】getenv 被禁用时不致命（实测它会抛 Error 而非返回
     $root = dirname(__DIR__);
     $bare = [];
     foreach (['config.php', 'includes/guard.php', 'includes/pagecache.php',
-              'includes/enrich.php', 'includes/client.php', 'img.php'] as $f) {
+              'includes/client.php', 'img.php'] as $f) {
         $src = (string) @file_get_contents($root . '/' . $f);
 
         // ① 挖掉 vhGetEnv 的整个函数体（含它前面的 if 包装）

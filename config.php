@@ -67,7 +67,7 @@ if (!function_exists('vhGetEnv')) {
 define('APP_NAME', '影视聚合站');
 
 // 版本号（与 CHANGELOG.md 保持一致）
-define('APP_VERSION', '1.4.1');
+define('APP_VERSION', '1.5.0');
 
 // ================================================================
 // 数据目录（安全基线 · 无 .htaccess 也能守住的那一条）
@@ -245,7 +245,7 @@ define('DEFAULT_ADMIN_PASSWORD', 'admin123');
  * 是否校验上游的 HTTPS 证书。
  *
  * ⚠ **默认为 true（校验）**，这是 1.3.4 的安全修复。
- *   此前 img.php / includes/enrich.php / includes/client.php 三处都写死
+ *   此前 img.php 与 includes/client.php 都写死
  *   `CURLOPT_SSL_VERIFYPEER => false` —— 意味着数据源地址、管理员密码哈希、
  *   影片元数据与播放地址的往来流量**全部暴露给中间人**。
  *

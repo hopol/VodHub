@@ -52,45 +52,6 @@
         target.setAttribute('src', 'static/img/no-cover.svg');
     }, true);
 
-    // ---------------------------------------------------------------- 播放页字段归一化
-    // 播放页先用「上游原始字段 + 本地解析」渲染出来，这里再异步补上需要常识判断的部分
-    // （地区/语言归一、主类型、更新状态、内容分级）。命中缓存时几乎瞬时返回。
-    // 失败一律静默 —— 页面上的原始字段本身就是完整可用的展示。
-    (function () {
-        // 只在「服务端确实没有富化缓存」时才发请求（容器上是 data-enrich="pending"）。
-        // 缓存命中时 play.php 已经把归一化字段直接渲染进首屏了 ——
-        // 再发一次 enrich.php 就是白扔一个 EP，因为数据早就在服务端手上。
-        var box = document.querySelector('[data-enrich="pending"]');
-        if (!box) return;
-
-        var qs = new URLSearchParams(window.location.search);
-        var source = qs.get('source') || '';
-        var vid = qs.get('id') || '';
-        if (!source || !vid) return;
-
-        fetch('enrich.php?source=' + encodeURIComponent(source) + '&id=' + encodeURIComponent(vid), {
-            credentials: 'same-origin',
-            headers: { 'Accept': 'application/json' }
-        }).then(function (r) {
-            if (!r.ok) throw new Error('HTTP ' + r.status);
-            return r.json();
-        }).then(function (d) {
-            if (!d || !d.ok) return;
-            replace('detailMeta', d.chips);
-            replace('playSide', d.side);
-        }).catch(function () { /* 保持原始字段即可 */ });
-
-        function replace(id, html) {
-            if (!html) return;
-            var el = document.getElementById(id);
-            if (!el) return;
-            var tmp = document.createElement('div');
-            tmp.innerHTML = html;
-            var next = tmp.firstElementChild;
-            if (next) el.parentNode.replaceChild(next, el);
-        }
-    })();
-
     // ---------------------------------------------------------------- 列表页本地筛选
     // 上游的 wd 参数只匹配 vod_name（实测 wd=<拼音>、wd=<别名> 都返回 0 条），
     // 所以别名、拼音、首字母、演员、导演、编剧、标签这些字段在站内检索里是死的。

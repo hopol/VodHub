@@ -2,15 +2,13 @@
 /**
  * buildMeta() 集成测试
  *
- * 这是全站字段渲染的**总入口**：5 套模板的 play.php、list.php、enrich.php
+ * 这是全站字段渲染的**总入口**：5 套模板的 play.php、list.php
  * 全部经过它。任何一处回归的表现都是「某类字段集体消失」且**不报错**。
  *
- * 与 test_fields.php 的分工：那边测单个纯函数，这边测**它们组合起来**的行为，
- * 特别是「enrich 缺席时本层必须独立可用」这条设计契约（见 fields.php 文件头）。
+ * 与 test_fields.php 的分工：那边测单个纯函数，这边测**它们组合起来**的行为。
  */
 
 require_once __DIR__ . '/bootstrap.php';
-require_once __DIR__ . '/../includes/enrich.php';
 
 /** 构造一条贴近真实上游的 detail（字段名与 docs/api-sources.md 一致） */
 function sampleDetail(array $over = []): array {
@@ -59,8 +57,8 @@ t('buildMeta 返回全部约定的键', static function (): void {
     $m = buildMeta(sampleDetail(), 1);
     foreach ([
         'vod_id', 'name', 'pic', 'type_name', 'genres', 'year', 'region', 'lang',
-        'status', 'remarks', 'score', 'hits', 'actors', 'desc', 'enriched',
-        'genre_main', 'adult', 'adult_warn', 'status_code', 'type_id', 'type_id_1',
+        'status', 'remarks', 'score', 'hits', 'actors', 'desc',
+        'status_code', 'type_id', 'type_id_1',
     ] as $k) {
         ok(array_key_exists($k, $m), "缺键 {$k} —— 模板按它取，缺了就是 undefined index");
     }
@@ -145,16 +143,18 @@ t('buildMeta 地区走代码归一', static function (): void {
     eq('中国大陆', buildMeta(sampleDetail(['vod_area' => '大陆']), 1)['region']);
 });
 
-t('buildMeta enrich 归一值优先于代码（带 confidence 的更可信）', static function (): void {
-    $m = buildMeta(sampleDetail(['vod_area' => '火星']), 1, [], [
-        'region' => '美国', 'region_src' => 'model',
-    ]);
-    eq('美国', $m['region']);
+t('【1.5.0】地区映射表没命中时原样展示上游写法，不留空', static function (): void {
+    // ⚠ 这是移除模型层时最容易踩的一处：normalizeRegions() 遇到任何不认识的
+    //   地区就返回 null，若直接 `(string)(... ?? '')`，这些片子的**地区会整个消失**。
+    //   正确做法是回退到上游原文 —— 宁可显示「火星地区」，也不要什么都不显示。
+    eq('火星地区', buildMeta(sampleDetail(['vod_area' => '火星地区']), 1)['region']);
+    // 「北美」是真实会遇到但映射表没收进去的写法（实测返回 null）
+    eq('北美', buildMeta(sampleDetail(['vod_area' => '北美']), 1)['region']);
 });
 
-t('buildMeta enrich 给空串时回落到代码归一', static function (): void {
-    $m = buildMeta(sampleDetail(['vod_area' => '大陆']), 1, [], ['region' => '']);
-    eq('中国大陆', $m['region']);
+t('【1.5.0】语言映射表没命中时同样原样展示', static function (): void {
+    eq('粤语', buildMeta(sampleDetail(['vod_lang' => '粤语']), 1)['lang']);
+    eq('外语', buildMeta(sampleDetail(['vod_lang' => '外语']), 1)['lang']);
 });
 
 // ==================================================================
@@ -165,11 +165,10 @@ t('buildMeta 状态来自代码归一（连载中）', static function (): void 
     eq('连载中', buildMeta(sampleDetail(), 1)['status']);
 });
 
-t('buildMeta 状态来自 enrich 的文案', static function (): void {
-    $m = buildMeta(sampleDetail(['vod_remarks' => 'HD中字']), 1, [], [
-        'update_status_text' => '非正片',
-    ]);
-    eq('非正片', $m['status']);
+t('【1.5.0】remarks 判不出状态时留空（不猜、不显示占位）', static function (): void {
+    // 1.5.0 之前这里会问模型，模型能把「HD中字」答成「非正片」。
+    // 现在只认 normalizeRemarks() 认得的写法，判不出就不渲染这一行。
+    eq('', buildMeta(sampleDetail(['vod_remarks' => 'HD中字']), 1)['status']);
 });
 
 t('buildMeta 三处都没有时状态为空串（不渲染占位）', static function (): void {
@@ -214,39 +213,21 @@ t('buildMeta 缺 vod_status 时默认 1（在架）', static function (): void {
 });
 
 // ==================================================================
-// 八、enrich 缺席时必须独立可用（fields.php 文件头写明的设计契约）
+// 八、1.5.0 移除模型层后的行为约定
 // ==================================================================
 
-t('【契约】enrich 为 null 时全部字段照常解析，不报错', static function (): void {
-    $m = buildMeta(sampleDetail(), 1, [], null);
-    eq('中国大陆', $m['region']);
-    eq('汉语普通话', $m['lang']);
-    eq('连载中', $m['status']);
-    eq(8.5, $m['score']);
-    ok($m['enriched'] === false, 'enriched 应为 false（模板据此决定要不要标 pending）');
+t('【1.5.0】buildMeta 只收 3 个参数，签名里没有 enrich', static function (): void {
+    $r = new ReflectionFunction('buildMeta');
+    eq(3, $r->getNumberOfParameters(), 'enrich 参数应已移除');
 });
 
-t('【契约】enrich 是空数组时 enriched 为 false', static function (): void {
-    $m = buildMeta(sampleDetail(), 1, [], []);
-    ok($m['enriched'] === false);
+t('【1.5.0】不再返回 enrich 派生的键', static function (): void {
+    $m = buildMeta(sampleDetail(), 1);
+    foreach (['enriched', 'genre_main', 'genre_raw', 'adult', 'adult_warn'] as $k) {
+        ok(!array_key_exists($k, $m), "{$k} 应随 enrich 层一并移除");
+    }
 });
 
-t('【契约】enrich 有内容时 enriched 为 true', static function (): void {
-    $m = buildMeta(sampleDetail(), 1, [], ['region' => '中国大陆']);
-    ok($m['enriched'] === true);
-});
-
-t('【契约】enrich 缺席时 adult 恒为 0 且不误报', static function (): void {
-    $m = buildMeta(sampleDetail(), 1, [], null);
-    eq(0.0, $m['adult']);
-    ok($m['adult_warn'] === false, '模型缺席时绝不能误标成人内容');
-});
-
-t('【契约】enrich 缺席时 genre_main 为空（不渲染主类型行）', static function (): void {
-    eq('', buildMeta(sampleDetail(), 1, [], null)['genre_main']);
-});
-
-// ==================================================================
 // 九、极端输入：全空 detail 不得抛异常
 // ==================================================================
 

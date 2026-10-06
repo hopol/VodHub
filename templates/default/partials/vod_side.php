@@ -8,11 +8,13 @@
  * 这里是「最大化利用源字段」的主战场：别名、上映日期、导演、编剧、主类型、
  * 集数、豆瓣、拼音/首字母、收录时间、播放来源 —— 这些字段原先在全站
  * 一处都没被读过，现在集中在这里按「有值才出现」渲染。
+ *
+ * 1.5.0 起这里不再有「主类型」一行 —— 它原本完全依赖模型归一化，
+ * 没有任何代码层兜底；模型层移除后宁可整行不显示，也不猜。
  */
 $ep = episodes(is_array($detail ?? null) ? $detail : [], intval($playCount ?? 0));
 ?>
-<aside class="play-side" id="playSide"
-       data-enrich="<?= ($enrichPending ?? false) ? 'pending' : 'done' ?>">
+<aside class="play-side" id="playSide">
     <h2 class="side-title">影片信息</h2>
     <dl class="info-list">
         <dt>编号</dt><dd><?= h($meta['vod_id']) ?></dd>
@@ -22,31 +24,6 @@ $ep = episodes(is_array($detail ?? null) ? $detail : [], intval($playCount ?? 0)
         <?php endif; ?>
 
         <dt>分类</dt><dd><?= h($meta['genres'] ? implode(' / ', $meta['genres']) : ($meta['type_name'] ?: '未知')) ?></dd>
-
-        <?php
-        // 主类型行（1.3.4 改）：
-        // 此前条件是 `genre_main !== '' && !in_array($genre_main, $genres)` ——
-        // 实测两道闸门叠加后，模型辛苦归一出的结果在 8/9 的情况下**什么都不显示**：
-        //   闸门一 confidence ≥ 0.7      → 6/9 通过（criteria 重叠导致分布被摊薄）
-        //   闸门二 不在原始 genres 里      → 6 个里只剩 1 个（归一标签恰好就是 vod_class 原词）
-        //
-        // 现在改成**只展示真正有增量的信息**：
-        //   · 归一结果（genre_main）优先；
-        //   · 模型判不出来时用原始 vod_class 兜底（genre_raw），不再留空；
-        //   · 两者都没有才不渲染 —— 而「有值才渲染」是本项目的既定约定。
-        $genreShow = '';
-        $genreSrc  = '';
-        if ($meta['genre_main'] !== '') {
-            $genreShow = $meta['genre_main'];
-            $genreSrc  = '归一';
-        } elseif (($meta['genre_raw'] ?? '') !== '') {
-            $genreShow = $meta['genre_raw'];
-            $genreSrc  = '原始';
-        }
-        ?>
-        <?php if ($genreShow !== ''): ?>
-            <dt>主类型</dt><dd><?= h($genreShow) ?><span class="dim"><?= h($genreSrc) ?></span></dd>
-        <?php endif; ?>
 
         <?php if ($meta['region'] !== ''): ?>
             <dt>地区</dt><dd><?= h($meta['region']) ?></dd>

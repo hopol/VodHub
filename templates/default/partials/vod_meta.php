@@ -13,12 +13,7 @@
  * 占位文案会让播放页常年挂着一排「未知」。
  */
 ?>
-<div class="detail-meta" id="detailMeta"
-     data-enrich="<?= ($enrichPending ?? false) ? 'pending' : 'done' ?>">
-    <?php if (!empty($meta['adult_warn'])): ?>
-        <span class="chip chip-warn" title="模型判定为成人向内容">⚠ 成人内容</span>
-    <?php endif; ?>
-
+<div class="detail-meta" id="detailMeta">
     <?php if ($meta['type_name'] !== ''): ?>
         <span class="chip chip-plain"><?= h($meta['type_name']) ?></span>
     <?php endif; ?>

@@ -15,7 +15,6 @@ Disallow: /search.php
 Disallow: /list.php?
 Disallow: /img.php
 Disallow: /admin.php
-Disallow: /enrich.php
 Disallow: /logout.php
 Allow: /
 

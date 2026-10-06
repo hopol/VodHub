@@ -10,7 +10,7 @@ require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/pagecache.php';
 
 /** 目标 schema 版本。dbInit() 用它判断「是否已经完整初始化」。 */
-const DB_SCHEMA_VERSION = 6;
+const DB_SCHEMA_VERSION = 7;
 
 /** 获取数据库连接（单例，自动建表） */
 function db(): PDO {
@@ -115,6 +115,9 @@ function dbInit(PDO $pdo): void {
         setSetting('schema_version', '4');
     }
 
+    // ⚠ 以下 v5 / v6 两段是**历史迁移，1.5.0 起 enrich 表已废弃**（见 v7）。
+    //   它们只为「老站从 v4 直升上来」保留，删掉会让迁移链断掉。
+    //
     // v5：富化缓存（TypeSafe System One 的归一化结果，按 数据源+影片 落库）
     // 单条元数据 30 天不变，所以按 vod_id 缓存而不是每次重算；
     // 空 data 是负缓存（上次调用失败），由 enrich.php 按短 TTL 自愈。
@@ -140,6 +143,23 @@ function dbInit(PDO $pdo): void {
     if ((int) setting('schema_version') < 6) {
         $pdo->exec('CREATE INDEX IF NOT EXISTS idx_enrich_created ON enrich(created_at)');
         setSetting('schema_version', '6');
+    }
+
+    // v7：**删掉 enrich 表**（1.5.0 移除了 TypeSafe 归一化层）
+    //
+    // 为什么不「只删代码、留空表」：这张表在 1.3.11 之前**没有自动清理**，
+    // 实测能涨到约 300 MB（1 GB 盘的三成）。留着它纯属占磁盘。
+    //
+    // ⚠ 上面 v5/v6 两段迁移**故意保留**：老站若停在 v4，升级时仍要能建表，
+    //   然后紧接着被这里删掉。DROP TABLE IF EXISTS 幂等，重复执行无副作用。
+    //   删掉 v5/v6 会让「从 v4 直升 1.5.0」的老站缺一张表再被 DROP —— 结果相同，
+    //   但保留它们能让迁移链保持可读、也让将来想恢复的人有据可依。
+    //
+    // ⚠ 这个迁移**不可逆**：表里的归一化缓存删掉后回滚 1.4.1 需要重新积累
+    //   （30 天 TTL 内会重新学一遍）。升级说明里已点明。
+    if ((int) setting('schema_version') < 7) {
+        $pdo->exec('DROP TABLE IF EXISTS enrich');
+        setSetting('schema_version', '7');
     }
 
     // ---------------------------------------------------------------- 短路
@@ -175,10 +195,6 @@ function dbInit(PDO $pdo): void {
         'player_autoplay'  => '1',
         'site_template'    => 'default',                 // 站点默认模板
         'list_columns'     => '0',                       // 列表列数（0 = 跟随模板默认）
-        'enrich_enabled'    => '1',                       // 播放页字段归一化（TypeSafe），0 = 关闭
-        'enrich_base_url'   => 'https://opencode.ai/zen/v1/systemone',
-        'enrich_model'      => 'jev-1.13-free',
-        'enrich_api_key'    => 'public',
     ];
     foreach ($defaults as $k => $v) {
         $stmt = $pdo->prepare('INSERT INTO settings (key, value) VALUES (?, ?)

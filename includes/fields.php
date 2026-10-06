@@ -2,10 +2,11 @@
 /**
  * 字段层：把苹果 CMS provide/vod 的原始字段解析成可直接渲染的值
  *
- * 设计原则（与 includes/enrich.php 的分工）：
+ * 设计原则（1.5.0 起本项目**不含任何模型调用**）：
  *   - 确定性的解析、映射、格式化全部在这里，不花钱、不联网、可预测；
- *   - 只有「值域开放、需要常识判断」的部分才交给 enrich.php（TypeSafe）；
- *   - enrich 缺席时本层必须独立可用 —— 所有函数都不得依赖 enrich 的结果。
+ *   - 上游同一字段有多种写法时，用**显式映射表**收敛成规范值
+ *     （见 normalizeRegions() / normalizeLangs() / normalizeRemarks()）；
+ *   - 映射表覆盖不到的值**原样展示** —— 宁可显示上游的写法，也不猜、不编。
  *
  * 覆盖的原始字段见 docs/api-sources.md「使用了哪些字段」。
  */
@@ -193,7 +194,7 @@ function episodes(array $detail, int $parsedCount = 0): array {
 }
 
 // ==================================================================
-// 代码侧归一化（确定性映射；返回 null 表示「本层判断不了，交给模型」）
+// 代码侧归一化（确定性映射；返回 null 表示「映射表覆盖不到，原样展示」）
 // ==================================================================
 
 /**
@@ -201,7 +202,7 @@ function episodes(array $detail, int $parsedCount = 0): array {
  *
  * 上游同一站点内值就不统一（实测「中国大陆」48 次 vs「大陆」43 次，
  * 「台湾」8 次 vs「中国台湾」6 次），多地区用 " / " 连接。
- * 返回 null 时由 enrich.php 兜底；返回非 null 时直接采用，不联网。
+ * 返回 null 表示「映射表覆盖不到」——调用方据此原样展示上游写法。
  */
 function normalizeRegions(string $raw): ?string {
     static $map = [
@@ -223,7 +224,7 @@ function normalizeRegions(string $raw): ?string {
     if ($raw === '' || $raw === '暂无') {
         return '';          // 没数据 → 不展示；'看不懂'才是 null
     }
-    // 聚合站常用合称：先展开成多个地区再逐个归一，比丢给模型猜更准
+    // 聚合站常用合称：先展开成多个地区再逐个归一，不做任何猜测
     static $expand = [
         '港台'   => '中国香港,中国台湾',
         '港澳台' => '中国香港,中国澳门,中国台湾',
@@ -241,7 +242,7 @@ function normalizeRegions(string $raw): ?string {
     $out = [];
     foreach ($parts as $p) {
         if (!isset($map[$p])) {
-            return null;   // 有一个不认识就整体交给模型，避免半生不熟的拼接
+            return null;   // 有一个不认识就整体返回 null，避免半生不熟的拼接
         }
         $out[] = $map[$p];
     }
@@ -251,7 +252,7 @@ function normalizeRegions(string $raw): ?string {
 
 /**
  * 语言归一化。与地区同理：「国语」57 次 vs「汉语普通话」47 次指同一件事。
- * 上游还会截断成「法」「英」这种单字 —— 这类交给模型。
+ * 上游还会截断成「法」「英」这种单字 —— 这类无法判断，返回 null 由调用方原样展示。
  */
 function normalizeLangs(string $raw): ?string {
     static $map = [
@@ -289,7 +290,7 @@ function normalizeLangs(string $raw): ?string {
  * 更新状态归一化 → 'finished' | 'ongoing' | null。
  *
  * 实测 `vod_remarks` 有 66 种取值，但句式规整：
- * 「已完结」「更新至20260926期」「更新至第08集」能直接判；「HD」「HD中字」判不了，交模型。
+ * 「已完结」「更新至20260926期」「更新至第08集」能直接判；「HD」「HD中字」判不了，返回 null。
  *
  * ⚠ 参数声明为 **?string 而不是 string**（1.3.4 起）：
  *   `vod_remarks` 缺失时 `?? ''` 给的是空串，但上游偶尔直接给 null ——
@@ -351,26 +352,30 @@ function searchHaystack(array $item): string {
  * @param array      $detail  上游单条记录（ac=detail&ids=）
  * @param int        $sourceId 数据源 id，封面代理要用
  * @param array      $types   分类数组（用于 type_name 回退）
- * @param array|null $enrich  enrich.php 的归一化结果，null 表示没开或未缓存
  */
-function buildMeta(array $detail, int $sourceId, array $types = [], ?array $enrich = null): array {
-    $enrich = is_array($enrich) ? $enrich : [];
+function buildMeta(array $detail, int $sourceId, array $types = []): array {
 
     $pub = parsePubdate($detail['vod_pubdate'] ?? '');
 
-    // 优先用模型归一化的值（带 confidence，低置信度时 enrich 会回填原始值）
-    $region = trim((string) ($enrich['region'] ?? '')) ?: (string) (normalizeRegions((string) ($detail['vod_area'] ?? '')) ?? '');
-    $lang   = trim((string) ($enrich['lang'] ?? ''))   ?: (string) (normalizeLangs((string) ($detail['vod_lang'] ?? '')) ?? '');
+    // 地区/语言：映射表命中就用规范值，**没命中就原样展示上游写法**。
+    //
+    // ⚠ `?? $detail['vod_area']` 这个回退不能省：normalizeRegions() 在遇到
+    //   任何一个不认识的地区时返回 null（宁可整体不归一，也不做半生不熟的拼接）。
+    //   若直接写成 `(string)(normalizeRegions(...) ?? '')`，那些上游用新写法
+    //   标注地区的片子**整个地区字段会变空** —— 页面上什么都不显示，
+    //   比显示「台湾」这种原始写法糟糕得多。
+    //   1.5.0 之前这里的第一优先级是模型归一化，现已随 enrich 一并移除。
+    $region = normalizeRegions((string) ($detail['vod_area'] ?? ''))
+              ?? (string) ($detail['vod_area'] ?? '');
+    $lang   = normalizeLangs((string) ($detail['vod_lang'] ?? ''))
+              ?? (string) ($detail['vod_lang'] ?? '');
 
-    $status = trim((string) ($enrich['update_status_text'] ?? ''));
-    if ($status === '') {
-        $code = normalizeRemarks($detail['vod_remarks'] ?? null);
-        $status = match ($code) {
-            'finished' => '已完结',
-            'ongoing'  => '连载中',
-            default    => '',
-        };
-    }
+    $code   = normalizeRemarks($detail['vod_remarks'] ?? null);
+    $status = match ($code) {
+        'finished' => '已完结',
+        'ongoing'  => '连载中',
+        default    => '',
+    };
 
     $actors    = splitList($detail['vod_actor'] ?? '');
     $genres    = array_merge(splitList($detail['vod_class'] ?? ''), splitList($detail['vod_tag'] ?? ''));
@@ -446,14 +451,5 @@ function buildMeta(array $detail, int $sourceId, array $types = [], ?array $enri
         'time_add'    => timeAgo($detail['vod_time_add'] ?? 0),
         'time'        => trim((string) ($detail['vod_time'] ?? '')),
         'status_code' => intval($detail['vod_status'] ?? 1),
-
-        // —— 富化附带 ——
-        'adult'       => (float) ($enrich['adult'] ?? 0),
-        'adult_warn'  => !empty($enrich['adult_warn']),
-        // 归一后的主类型（模型给的），可能为空串
-        'genre_main'  => (string) ($enrich['genre_text'] ?? ''),
-        // 模型判不准时的兜底：原始 vod_class 前两个词（1.3.4 新增）
-        'genre_raw'   => (string) ($enrich['genre_raw'] ?? ''),
-        'enriched'    => $enrich !== [],
     ];
 }

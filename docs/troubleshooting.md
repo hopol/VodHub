@@ -44,7 +44,7 @@ tail -f runtime/php_errors.log    # 部分环境
 |---|---|
 | 前台 `index/list/search/play/history` | **500 + 空响应体** |
 | `/static/*`、`/robots.txt` | 200 ✅ |
-| `/admin.php`、`/img.php`、`/enrich.php` | 正常 ✅ |
+| `/admin.php`、`/img.php` | 正常 ✅ |
 | 后台「极致低功耗状态」 | ⚠️ 无法显示（**Call to undefined function disk_total_space()**） |
 | 下方「🧹 系统缓存」 | **照常可用**（故障隔离生效了） |
 
@@ -56,7 +56,7 @@ tail -f runtime/php_errors.log    # 部分环境
 > 把整站前台打死。而后台有 `try/catch`，所以**两边表现不一致** —— 这正是定位线索。
 
 **为什么只有 5 个前台页挂**：只有它们走 `renderTemplate()` → `pcSyncGate()` →
-`guardCaps()` → `guardDisk()`。`img.php` 不走，`enrich.php` 只 require 不调用，
+`guardCaps()` → `guardDisk()`。`img.php` 不走，
 `admin.php` 有 try/catch。
 
 **怎么修**（1.3.0 已修，第 4 轮）：`guardDisk()` 加 `function_exists` + `try/catch`
@@ -88,7 +88,6 @@ tail -f runtime/php_errors.log    # 部分环境
 | `/static/style.css`、`/robots.txt` | ✅ 200 |
 | `/admin.php` | ✅ 200（能登录） |
 | `/img.php?u=&s=1` | ✅ 400 `missing url`（**这是正常响应**） |
-| `/enrich.php?...` | ✅ 200 JSON |
 | **`/index.php`、`/list.php`、`/search.php`、`/play.php`、`/history.php`** | 🔴 **500 + 空响应体** |
 
 **根因**：**`config.php` 还是 1.2.0 旧版** —— 1.3.0 给它新增了 4 个常量
@@ -99,7 +98,7 @@ tail -f runtime/php_errors.log    # 部分环境
 让它**不打印**，于是变成「**500 + 空体**」—— 既没有报错文本，也没有半截页面。
 
 **为什么只有那 5 个页面挂**：只有它们走 `renderTemplate()`。
-`img.php` 不走、`enrich.php` 只 `require` 不调用、`admin.php` 自己输出 HTML、
+`img.php` 不走、`admin.php` 自己输出 HTML、
 静态文件根本不进 PHP —— 所以它们全部正常。**这正是定位的关键线索。**
 
 **判别口诀**：
@@ -316,9 +315,9 @@ curl -sI "https://你的域名/img.php?u=..." | grep -i cache-control
    （CGI/FPM 有效，**不依赖 `.htaccess`**）
 3. 都不行 → 会话目录权限设 700，并定期改后台密码
 
-## 出站连接（数据源 / 图片 / 归一化）
+## 出站连接（数据源 / 图片）
 
-> **1.3.4 起，证书校验默认开启。** 此前三处（`img.php`、`includes/enrich.php`、
+> **1.3.4 起，证书校验默认开启。** 此前两处（`img.php`、
 > `includes/client.php`）都写死 `CURLOPT_SSL_VERIFYPEER => false`，
 > 意味着数据源地址、影片元数据、播放地址的往来流量**可被中间人读取与篡改**。
 > 现在默认校验，但仍保留显式降级口子 —— 因为免费主机的 CA 链常不完整。
@@ -371,13 +370,6 @@ VODHUB_TLS_VERIFY=0
 
 同上一条。若图片源是 HTTP 而非 HTTPS，则与本节无关，
 去「图片相关」章节查。
-
-### 富化（播放页字段归一化）报 SSL 错误
-
-同上，但影响的是播放页的类型/地区/语言归一化。
-功能本身有降级（失败即用原始字段），**不会白屏**，只是归一化时有时无。
-
----
 
 ## 图片相关
 
@@ -783,7 +775,7 @@ PHP 就会在中途致命错误；而生产环境 `display_errors=Off`，
 **处理**：
 
 1. 后台勾**图片本地缓存** + **页面静态缓存**清理；
-2. 确认**容量档位**选对（1 GB 空间 → 紧凑，上限 132 MB）；
+2. 确认**容量档位**选对（1 GB 空间 → 紧凑，上限 105 MB）；
 3. 检查是不是上传了 `docs/` 之类的无关大文件；
 4. 水位恢复到 8% 以上会自动退出保护模式。
 
