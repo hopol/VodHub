@@ -8,6 +8,14 @@
     RewriteRule ^templates/.*\.(php|json)$ - [F,L]
 
     RewriteCond %{REQUEST_METHOD} =GET
+    # ⚠ 这条判据是 1.5.2 补的（**顺序敏感，别删**）：
+    #   Apache 的 RewriteRule 自上而下第一条匹配即 [L]，而下一条才是「?source=N」的。
+    #   缺了 `^$`（查询串必须为空）时，只要本小时的 index.html 存在，
+    #   **任何** ?source=N 都会被下面那条无参数的规则截胡 → 用户点数据源标签
+    #   看到的永远是全站首页，且页面字节数/Last-Modified 与不带参数时完全相同。
+    #   ⚠ 少了它还能「用」—— 因为开着访问密码时静态化本就停用，rewrite 根本不生效。
+    #     正因如此它潜伏了半年多（1.3.0 引入规则起就是错的，1.5.2 才修）。
+    RewriteCond %{QUERY_STRING} ^$
     RewriteCond %{DOCUMENT_ROOT}/c/.lock !-f
     RewriteCond %{DOCUMENT_ROOT}/c/%{TIME_YEAR}%{TIME_MON}%{TIME_DAY}-%{TIME_HOUR}/index.html -f
     RewriteRule ^index\.php$ c/%{TIME_YEAR}%{TIME_MON}%{TIME_DAY}-%{TIME_HOUR}/index.html [L]
@@ -37,6 +45,14 @@
     RewriteRule ^play\.php$ c/%{TIME_YEAR}%{TIME_MON}%{TIME_DAY}-%{TIME_HOUR}/play-%1-%2.html [L]
 
     RewriteCond %{REQUEST_METHOD} =GET
+    # 1.5.2 同 index.php，理由见上。
+    # ⚠⚠ 判据行**末尾绝对不能加行内注释**（`... ^$  # 说明`）——
+    #   Apache 会把 `#` 之后当成 RewriteCond 的 flag，解析失败报
+    #   `RewriteCond: bad flag delimiters`，**整个 .htaccess 失效 → 整站 500**。
+    #   实测踩过：这是本条判据第一次写成行内注释时就 500 了。
+    #   这与 1.3.4 那次「不能用 `<!-- -->`」是同一类坑：注释语法在
+    #   .htaccess 里有自己的规矩，不是「怎么写都算注释」。
+    RewriteCond %{QUERY_STRING} ^$
     RewriteCond %{DOCUMENT_ROOT}/c/.lock !-f
     RewriteCond %{DOCUMENT_ROOT}/c/%{TIME_YEAR}%{TIME_MON}%{TIME_DAY}-%{TIME_HOUR}/history.html -f
     RewriteRule ^history\.php$ c/%{TIME_YEAR}%{TIME_MON}%{TIME_DAY}-%{TIME_HOUR}/history.html [L]

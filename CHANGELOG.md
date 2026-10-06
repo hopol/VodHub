@@ -5,6 +5,99 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.5.2] - 2026-10-06
+
+**修一个存在了半年的线上缺陷：`index.php?source=N` 返回的是全站首页。**
+
+### 现象
+
+`vodhub.gt.tc/index.php?source=4` 打开后**显示的还是全站首页**（15 个数据源全列出来），
+而不是 TYYS 那个源的列表。
+
+判定依据：带 `source=4` 与不带参数的两次请求，返回的**字节数完全相同**（216520）、
+`Last-Modified` 与 `ETag` 也完全相同 —— 返回的是**同一个文件**。
+
+### 根因：`.htaccess` 的规则顺序，不是 PHP 逻辑
+
+```apache
+# 规则 1 —— 处理「无参数」，⚠ 不看 QUERY_STRING
+RewriteCond %{DOCUMENT_ROOT}/c/<桶>/index.html -f
+RewriteRule ^index\.php$ c/<桶>/index.html [L]
+
+# 规则 2 —— 处理 ?source=N
+RewriteCond %{QUERY_STRING} ^source=(\d+)$
+RewriteCond %{DOCUMENT_ROOT}/c/<桶>/index-%1.html -f
+RewriteRule ^index\.php$ c/<桶>/index-%1.html [L]
+```
+
+Apache 的 `RewriteRule` **自上而下第一条匹配即 `[L]` 立即停止**。
+规则 1 不检查查询串，所以只要本小时的 `index.html` 存在（首页几乎总会生成），
+**任何** `?source=N` 都被它截胡 —— 规则 2 **永远轮不到执行**。
+
+这也解释了为什么 `index-4.html` 从来不存在：PHP 根本没被调用过，没人写它。
+
+**同样的缺陷也在 `history.php`**（`history.php?source=1` 返回全站历史页），一并修了。
+`list.php` / `play.php` 没事 —— 它们的每条规则都带 `QUERY_STRING` 判据。
+
+### 修法：`.htaccess` 加 2 行
+
+```diff
+@@ index.php 的「无参数」规则 @@
+     RewriteCond %{REQUEST_METHOD} =GET
++    RewriteCond %{QUERY_STRING} ^$
+     RewriteCond %{DOCUMENT_ROOT}/c/.lock !-f
+
+@@ history.php 的「无参数」规则 @@
+     RewriteCond %{REQUEST_METHOD} =GET
++    RewriteCond %{QUERY_STRING} ^$
+     RewriteCond %{DOCUMENT_ROOT}/c/.lock !-f
+```
+
+`^$` = 查询串必须为空。**只加 2 行，不删任何东西，不提高权限要求**
+（新增的是 `RewriteCond`，与文件里已有的 `RewriteCond %{QUERY_STRING}` 同一类别）。
+
+### 为什么能潜伏这么久
+
+**开着访问密码时静态化本就停用，rewrite 根本不生效。**
+主力站 `hop.free.je` 开着访问密码 ⇒ 这条路径从没被走到 ⇒ 210 项断言一条都没抓到。
+
+规则自 **1.3.0**（2026-09-28）引入起就是错的，中间只被注释语法（1.3.4）和权限（1.3.3）碰过。
+`git diff v1.4.1 -- .htaccess` 为空 —— **1.5.0 / 1.5.1 都没碰过**，不是新版本引入的。
+
+### 新增契约 11（3 条）
+
+| 契约 | 挡住什么 |
+|---|---|
+| 静态直出规则必须带 `QUERY_STRING` 判据 | 「`?source=N` 打不开」（本版修的这个） |
+| `RewriteCond` 行末不能带行内注释 | 「整站 500」（见下） |
+| `.htaccess` 只用 FileInfo 类指令 | 「越权指令 → 整站 500」（1.3.3 那次） |
+
+判据是**扫出来的**（逐条解析 `RewriteRule` 与其前置 `RewriteCond`）——
+将来新增页面文件时自动纳入检查，不依赖「我知道有哪几条规则」这份清单。
+
+> ⚠ 写第一条判据时踩了个坑：当成
+> `RewriteCond %{QUERY_STRING} ^$   # 判据` 的**行内注释**形式，
+> Apache 报 `RewriteCond: bad flag delimiters` ⇒ **整站 500**。
+> 与 1.3.4 那次「不能用 `<!-- -->`」是同一类坑：**.htaccess 的注释语法有自己的规矩**。
+> 这也是契约 11 第二条判据的由来。
+
+### 验证
+
+在本地 **Apache 2.4.58**（与 `docs/deployment.md` 实测矩阵同一版本）、
+`AllowOverride=FileInfo`（与线上一致）上实测：
+
+```
+修复前： index.php?source=4   → 全站首页    ❌
+修复后： index.php?source=4   → TYYS单源     ✅
+        index.php            → 全站首页     ✅（未被破坏）
+        history.php?source=1 → HISTORY-源1  ✅
+边界：   静态文件不存在 / POST / 不存在的源 / .lock 存在  全部正确
+```
+
+**213 项断言全绿**（1.5.1 是 210），注入回归 12/12 有效，11 个文件逐字节还原。
+
+---
+
 ## [1.5.1] - 2026-10-06
 
 **三个小修：封面查询去重、删掉两个没人用的函数、5 套主题的头部并成一处配置。**

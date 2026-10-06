@@ -1392,4 +1392,178 @@ t('契约 8 播放器拿到的地址都来自 parsePlayUrl，没有绕开线路�
 });
 
 // ==================================================================
+// ══════════════════════════════════════════════════════════════════════
+// 契约 11：.htaccess 的 rewrite 规则（1.5.2 立）
+// ══════════════════════════════════════════════════════════════════════
+//
+//  **这条契约是被一个真实线上缺陷逼出来的**：
+//
+//    `index.php?source=4` 返回的是**全站首页**，不是该数据源的列表。
+//    根因不是 PHP 逻辑，而是 `.htaccess` 的**规则顺序**：
+//
+//      RewriteCond .../index.html -f
+//      RewriteRule ^index\.php$ .../index.html [L]     ← 不看 QUERY_STRING
+//
+//      RewriteCond %{QUERY_STRING} ^source=(\d+)$
+//      RewriteRule ^index\.php$ .../index-%1.html [L]  ← 永远轮不到
+//
+//    Apache 的 RewriteRule **自上而下第一条匹配即 [L]**，所以只要
+//    `index.html` 存在（首页几乎总会生成），**任何** ?source=N 都被截胡。
+//
+//  为什么能潜伏这么久：**开着访问密码时静态化本就停用，rewrite 根本不生效**。
+//  主力站开着密码 ⇒ 这条路径从没被走到 ⇒ 210 项断言一条都没抓到。
+//  它自 1.3.0 引入规则起就是错的，1.5.2 才修。
+//
+//  判据是**扫出来的**：逐条解析 RewriteRule 与其前置 RewriteCond，
+//  不依赖「我知道有哪几条规则」这份清单 —— 将来新增页面文件时自动纳入检查。
+
+group('契约 11：.htaccess 的 rewrite 规则');
+
+t('无参数的静态直出规则必须带 QUERY_STRING 判据（否则 ?source=N 永远打不开）', static function () use ($root): void {
+    $file = $root . '/.htaccess';
+    ok(is_file($file), '.htaccess 必须存在');
+    $lines = file($file, FILE_IGNORE_NEW_LINES) ?: [];
+
+    // 逐个「RewriteRule 块」解析：向上收集它之前连续的 RewriteCond
+    $blocks  = [];
+    $conds   = [];
+    foreach ($lines as $i => $ln) {
+        $t = trim($ln);
+        if ($t === '' || str_starts_with($t, '#')) {
+            continue;                       // 空行与注释行不参与
+        }
+        if (str_starts_with($t, 'RewriteCond')) {
+            $conds[] = $t;
+            continue;
+        }
+        if (str_starts_with($t, 'RewriteRule')) {
+            $blocks[] = ['conds' => $conds, 'rule' => $t, 'line' => $i + 1];
+            $conds = [];
+            continue;
+        }
+        $conds = [];                         // 其它指令 ⇒ 前面的 cond 不属于下一条 rule
+    }
+
+    // 实际是 7 条静态直出规则（index×2 / list×2 / play×1 / history×2）
+    ok(count($blocks) >= 10, '应解析出 10 条 RewriteRule，实际 ' . count($blocks));
+
+    // 静态直出规则 = **替换目标**里带 `c/` 的那些。
+    // ⚠ 判据写成 `c/` 而不是 `/c/`：目标是 `c/%{TIME_YEAR}.../index.html`，
+    //   `c/` 前面**没有斜杠**（斜杠是 DocumentRoot 之后的分隔）。
+    //   写错成 `/c/` 会静默匹配 0 条 —— 而判据「匹配 0 条」时最危险，
+    //   它让这条契约看起来一直绿，实际从没检查过任何东西。
+    //   所以下面紧接着有一条 `count($static) >= 8` 的反向自查。
+    $static = array_values(array_filter($blocks,
+        static fn (array $b): bool => (bool) preg_match('#\bc/#', $b['rule'])));
+    ok(count($static) >= 7, '应至少有 7 条静态直出规则，实际 ' . count($static));
+
+    // 关键判据：**任何**静态直出规则都必须带 QUERY_STRING 判据。
+    // 只看「有没有」，不看顺序 —— 因为「没带」的那条一定会抢在前面（它更简单）。
+    $bad = [];
+    foreach ($static as $b) {
+        $hasQs = false;
+        foreach ($b['conds'] as $c) {
+            if (str_contains($c, 'QUERY_STRING')) {
+                $hasQs = true;
+                break;
+            }
+        }
+        if (!$hasQs) {
+            $bad[] = '第 ' . $b['line'] . ' 行：' . $b['rule'];
+        }
+    }
+    eq([], $bad,
+        "这些静态直出规则**没有 QUERY_STRING 判据**：\n  " . implode("\n  ", $bad)
+        . "\n\n没有它 ⇒ 同一组里更靠前的规则会把带参数的请求全部截胡。"
+        . "\n实测症状：`index.php?source=4` 返回全站首页（字节数与 Last-Modified "
+        . "\n与不带参数时完全相同，因为返回的是同一个文件）。");
+
+    // 反向自查：确实存在「带参数」的规则，证明上面那条判据不是空转
+    $withQs = 0;
+    foreach ($static as $b) {
+        foreach ($b['conds'] as $c) {
+            if (str_contains($c, 'QUERY_STRING')) {
+                $withQs++;
+                break;
+            }
+        }
+    }
+    ok($withQs >= 4,
+        '应至少有 4 条带 QUERY_STRING 判据的静态直出规则，实际 ' . $withQs
+        . ' —— 若为 0，说明上面的判据因「规则本身就少」而空转');
+});
+
+t('RewriteCond 行末不能带行内注释（会让整站 500）', static function () use ($root): void {
+    // ⚠⚠ 这一条是 1.5.2 写第一条判据时**当场踩到的**：
+    //   `RewriteCond %{QUERY_STRING} ^$   # 说明` 这样的行内注释，
+    //   Apache 会把 `#` 之后当成 RewriteCond 的 flag，解析失败报
+    //   `RewriteCond: bad flag delimiters` ⇒ **整个 .htaccess 失效 ⇒ 整站 500**。
+    //
+    // 它与 1.3.4 那次「不能用 `<!-- -->`」是同一类坑：
+    // **注释语法在 .htaccess 里有自己的规矩**，不是「怎么写都算注释」。
+    // 而且这类失败**没有任何症状提示** —— 表现就是整站 500。
+    $lines = file($root . '/.htaccess', FILE_IGNORE_NEW_LINES) ?: [];
+    $bad   = [];
+    foreach ($lines as $i => $ln) {
+        if (!str_starts_with(trim($ln), 'RewriteCond')) {
+            continue;
+        }
+        if (preg_match('/\s#/', $ln)) {
+            $bad[] = '第 ' . ($i + 1) . ' 行：' . trim($ln);
+        }
+    }
+    eq([], $bad,
+        "这些 RewriteCond 行末带了行内注释：\n  " . implode("\n  ", $bad)
+        . "\n\n后果是 `RewriteCond: bad flag delimiters` ⇒ **整站 500**（实测）。"
+        . "\n注释必须**独占一行**（行首 #）。");
+
+    // 反向自查：文件里确实有注释行（否则这条判据在「删光注释」后也恒绿，
+    // 失去意义）
+    $comments = 0;
+    foreach ($lines as $ln) {
+        if (str_starts_with(trim($ln), '#')) {
+            $comments++;
+        }
+    }
+    ok($comments >= 5,
+        '.htaccess 里应有若干独占一行的注释（那是 1.3.3/1.3.4 踩坑换来的警告），'
+        . '实际只有 ' . $comments . ' 行');
+});
+
+t('.htaccess 只用 FileInfo 类指令（越权指令会让整站 500）', static function () use ($root): void {
+    // 契约 5 之外再加一条兜底：`.htaccess` 是**部署文件**，不在 PHP 扫描范围内，
+    // 而 1.3.3 那次整站 500 正是越权指令造成的。这里把「按指令名归类」
+    // 抽出来，历史事故与新增判据共用同一份实现。
+    $need = [
+        'Options'      => ['options'],
+        'php_value'    => ['php_value'],
+        'php_flag'     => ['php_flag'],
+        'php_admin_value' => ['php_admin_value'],
+        'php_admin_flag'  => ['php_admin_flag'],
+        'ExpiresActive'   => ['expiresactive'],
+        'ExpiresByType'   => ['expiresbytype'],
+        'ExpiresDefault'  => ['expiresdefault'],
+    ];
+    $bad = [];
+    foreach (file($root . '/.htaccess', FILE_IGNORE_NEW_LINES) ?: [] as $i => $ln) {
+        $t = strtolower(trim($ln));
+        if ($t === '' || str_starts_with($t, '#')) {
+            continue;
+        }
+        foreach ($need as $label => $patterns) {
+            foreach ($patterns as $p) {
+                if (str_starts_with($t, $p . ' ') || $t === $p) {
+                    $bad[] = '第 ' . ($i + 1) . ' 行：' . trim($ln) . '（需 AllowOverride ' . $label . '）';
+                }
+            }
+        }
+    }
+    eq([], $bad,
+        "这些指令需要 AllowOverride " . "\n  " . implode("\n  ", $bad)
+        . "\n\n本项目只在 FileInfo 上验证过（能用 rewrite 的主机就一定能用本文件）。"
+        . "\n1.3.3 实际事故：旧版 19 条越权指令 → 传上去当天整站 500 白屏。");
+});
+
+// ══════════════════════════════════════════════════════════════════════
+
 finish();
