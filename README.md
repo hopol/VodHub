@@ -10,11 +10,35 @@
 [![CI](https://github.com/hopol/VodHub/actions/workflows/ci.yml/badge.svg)](https://github.com/hopol/VodHub/actions/workflows/ci.yml)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-[快速开始](#-快速开始) · [在线文档](docs/) · [模板开发](docs/templates.md) · [提交 Issue](https://github.com/hopol/VodHub/issues)
+[在线演示](#-在线演示) · [快速开始](#-快速开始) · [在线文档](docs/) · [模板开发](docs/templates.md) · [提交 Issue](https://github.com/hopol/VodHub/issues)
 
 </div>
 
 ---
+
+## 🖥 在线演示
+
+不想先装就看看？两个演示站**直接点开即可，无需密码**：
+
+| 演示站 | 地址 |
+|:---:|:---:|
+| **A** | **[vodhub.gt.tc](https://vodhub.gt.tc/)** |
+| **B** | **[vodhub.ct.ws](https://vodhub.ct.ws/)** |
+
+**前台完全公开** —— 分类、列表、播放页都能直接浏览。
+**后台不公开** —— `/admin.php` 需要管理密码，未登录只显示登录表单。
+
+> **关于这两个演示站，有四条要知道的：**
+>
+> 1. **它们不存储任何视频。** 影片、封面、播放地址全部来自上游接口，
+>    播放时把 `m3u8` 直接交给你的浏览器 —— 和你本地部署后的行为**完全一致**。
+> 2. **上游挂了，分类就会显示「暂无内容」。** 那是**上游临时不可用**，
+>    不是站点故障 —— 本站**从不缓存或存储视频**，上游给什么就只能显示什么。
+> 3. **内容与版权归原上游所有**，演示站只做展示用途。
+> 4. **演示站可能随时下线、重置或限流。** 需要长期稳定的环境请自行部署 ——
+>    见下方「快速开始」，扔进 `htdocs` 就能跑。
+>
+> 两个站都只读：能看，改不了任何东西（没有管理密码进不了后台）。
 
 ## 📸 界面预览
 
