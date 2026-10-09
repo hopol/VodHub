@@ -1,7 +1,7 @@
 <?php
 /**
  * default 模板 - 播放页
- * 变量：$source, $sourceId, $vodId, $detail, $name, $pic, $playUrls, $playCount,
+ * 变量：$sourceId, $vodId, $detail, $name, $pic, $playUrls, $playCount,
  *       $types, $typeName, $desc, $meta, $autoplay
  *
  * 字段渲染拆到两个共享片段（全站 5 套模板共用，见片段内注释）：
@@ -52,7 +52,7 @@ require tplInclude('header.php', $tplName);
             <?php endif; ?>
 
             <?php tplPartial('vod_meta', $tplName, [
-                'meta' => $meta, 'source' => $source, 'sourceId' => $sourceId,
+                'meta' => $meta, 'sourceId' => $sourceId,
             ]); ?>
 
             <?php if ($desc !== ''): ?>
@@ -106,7 +106,7 @@ require tplInclude('header.php', $tplName);
     </div>
 
     <?php tplPartial('vod_side', $tplName, [
-        'meta' => $meta, 'detail' => $detail, 'source' => $source,
+        'meta' => $meta, 'detail' => $detail,
         'sourceId' => $sourceId, 'playCount' => $playCount,
     ]); ?>
 </div>

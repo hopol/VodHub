@@ -447,7 +447,6 @@ function buildMeta(array $detail, int $sourceId, array $types = []): array {
         'douban_url'  => doubanUrl($detail['vod_douban_id'] ?? 0),
         'douban_score'=> (float) ($detail['vod_douban_score'] ?? 0),
         'play_from'   => trim((string) ($detail['vod_play_from'] ?? '')),
-        'play_server' => trim((string) ($detail['vod_play_server'] ?? '')),
         'time_add'    => timeAgo($detail['vod_time_add'] ?? 0),
         'time'        => trim((string) ($detail['vod_time'] ?? '')),
         'status_code' => intval($detail['vod_status'] ?? 1),

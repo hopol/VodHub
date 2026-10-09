@@ -2,7 +2,7 @@
 /**
  * 播放页 · 信息 chips（default 及其回退模板共用）
  *
- * 变量：$meta（buildMeta() 的返回值）, $source, $sourceId
+ * 变量：$meta（buildMeta() 的返回值）, $sourceId
  *
  * 为什么单独抽片段：5 套模板的 play.php 原本是逐字节相同的拷贝，
  * 字段一多就得改 5 遍、漏一个就出现「有的模板显示有的不显示」。

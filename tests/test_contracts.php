@@ -1678,4 +1678,103 @@ t('契约文件扫描必须覆盖子目录（范围不能静默缩小）', stati
        . '漏了它契约 3 会报「没人读」（1.5.3 实际发生过）');
 });
 
+
+// ══════════════════════════════════════════════════════════════════════
+// 契约 14：渲染层点名要的文件，default 模板必须真的有（1.5.5 立）
+// ══════════════════════════════════════════════════════════════════════
+//
+//  **起因**：本项目有 6 个「同名两处」的页面 —— 根目录控制器 `play.php`
+//  与 `templates/default/play.php`（模板）。两者角色不同（控制器取数据、
+//  模板输出 HTML，内容 95% 以上不同），**不是重复，不该合并**。
+//
+//  但在改播放页时，我拿裸相对路径去编辑，**打成了控制器而不是模板** ——
+//  而 PHP 运行时永远不会犯这个错：路径是
+//  `tplRoot() . '/' . $tpl . '/' . $pageFile . '.php'` 显式拼出来的。
+//  **歧义只存在于「人手打路径」时**，不是架构问题。
+//
+//  真正要防的是这三种失败模式，而它们**一条判据都没有**（写本契约时 grep
+//  tests/ 里 renderTemplate 的出现次数：0 处是断言，3 处只是注释）：
+//
+//    renderTemplate('X')  文件缺 → **显式 500**（exit('模板页面缺失：X')）
+//    tplPartial('X')      文件缺 → **静默 return**，那一段从页面上凭空消失
+//    tplInclude('X')      文件缺 → 回退 _noop 空壳，**头部/尾部凭空消失**
+//
+//  后两种更坏：**不报错，只是少了东西** —— 1.3.12 的模板去重正是靠
+//  「回退 default」活着，谁删重了文件而 default 兜不住，表现就是
+//  「某个区块不见了」，比 500 还难查。
+//
+//  所以本契约只守一件事：**只要渲染层点名了 X，default 模板里就必须有 X。**
+//  default 是三处回退链的终点 —— 它有，三处全安全。
+
+group('契约 14：渲染层点名要的文件，default 模板必须真的有');
+
+t('renderTemplate / tplPartial / tplInclude 点名的文件在 default 里都存在', static function () use ($root): void {
+    // ---- 扫：全仓库的调用点 ----
+    //   t_contract_files 递归且排除 tests/（契约 13 定的范围）；
+    //   t_contract_code 用 token_get_all 剥注释 —— 文档注释里的
+    //   `renderTemplate($pageFile…)` 不是调用，留着会让判据去查没人要的文件。
+    $calls = ['renderTemplate' => [], 'tplInclude' => [], 'tplPartial' => []];
+    foreach (t_contract_files($root) as $f) {
+        $code = t_contract_code((string) file_get_contents($f));
+        foreach ($calls as $fn => $_) {
+            // 只认**字面量**首参 `fn('...')`；用变量传的扫不到 —— 扫不到的不该由本判据负责
+            if (!preg_match_all('/(?<![\w$>:])' . preg_quote($fn, '/') . "\s*\(\s*'([^']+)'/", $code, $m)) {
+                continue;
+            }
+            foreach ($m[1] as $arg) {
+                $calls[$fn][$arg][] = basename($f);
+            }
+        }
+    }
+
+    // ---- 反向自检 ①：证明这不是扫不出东西的空集合 ----
+    //   否则下面的 eq([]) 恒绿，本判据等于不存在（这正是「判据空转」）。
+    ok(count($calls['renderTemplate']) >= 5,
+       '应扫到 ≥5 个 renderTemplate 页面名，实际 ' . count($calls['renderTemplate'])
+       . '（index/list/play/search/history/login 至少 6 个）—— 扫不到说明正则失效');
+    ok(count($calls['tplPartial']) >= 3,
+       '应扫到 ≥3 个 tplPartial 片段名，实际 ' . count($calls['tplPartial']));
+    ok(count($calls['tplInclude']) >= 2,
+       '应扫到 ≥2 个 tplInclude 文件名，实际 ' . count($calls['tplInclude']));
+
+    // ---- 反向自检 ②：扫到的必须像文件名，别混进散文 ----
+    foreach ($calls as $fn => $byArg) {
+        foreach ($byArg as $arg => $where) {
+            ok(preg_match('/^[A-Za-z0-9_]+(\.php)?$/', $arg) === 1,
+               "$fn() 的首参不像文件名：'$arg'（出现于 " . implode('、', $where) . '）');
+        }
+    }
+
+    // ---- 核心：三处回退的终点都是 default，必须都真的有 ----
+    $bad = [];
+    foreach ($calls['renderTemplate'] as $name => $where) {
+        if (!is_file(tplRoot() . '/default/' . $name . '.php')) {
+            $bad[] = "renderTemplate('$name') → templates/default/{$name}.php 缺失（由 "
+                  . implode('、', $where) . ' 点名）';
+        }
+    }
+    foreach ($calls['tplPartial'] as $name => $where) {
+        if (!is_file(tplRoot() . '/default/partials/' . $name . '.php')) {
+            $bad[] = "tplPartial('$name') → templates/default/partials/{$name}.php 缺失（由 "
+                  . implode('、', $where) . ' 点名）';
+        }
+    }
+    foreach ($calls['tplInclude'] as $name => $where) {
+        // tplInclude 的首参自带 .php（如 'header.php'），路径直接拼在 default 下
+        if (!is_file(tplRoot() . '/default/' . $name)) {
+            $bad[] = "tplInclude('$name') → templates/default/{$name} 缺失（由 "
+                  . implode('、', $where) . ' 点名）';
+        }
+    }
+
+    eq([], $bad,
+        "这些文件被渲染层点名了，但 default 模板里没有 —— 回退链的终点是空的：\n  "
+        . implode("\n  ", $bad)
+        . "\n\n三种失败方式各不相同，而后两种**都不报错**：\n"
+        . "  · renderTemplate → 显式 500「模板页面缺失」\n"
+        . "  · tplPartial     → 静默 return，那一段从页面上凭空消失\n"
+        . "  · tplInclude     → 回退 _noop 空壳，头部/尾部凭空消失\n"
+        . "\n「有的区块不见了」比 500 更难查 —— 这正是本判据要挡住的形状。");
+});
+
 finish();

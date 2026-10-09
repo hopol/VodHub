@@ -2,15 +2,21 @@
 /**
  * 播放页 · 侧栏影片信息（default 及其回退模板共用）
  *
- * 变量：$meta（buildMeta()）, $detail（原始记录，算集数要用）, $source,
+ * 变量：$meta（buildMeta()）, $detail（原始记录，算集数要用）,
  *       $sourceId, $playCount（已解析出的可播集数）
  *
  * 这里是「最大化利用源字段」的主战场：别名、上映日期、导演、编剧、主类型、
- * 集数、豆瓣、拼音/首字母、收录时间、播放来源 —— 这些字段原先在全站
+ * 集数、豆瓣、拼音/首字母、收录时间 —— 这些字段原先在全站
  * 一处都没被读过，现在集中在这里按「有值才出现」渲染。
  *
  * 1.5.0 起这里不再有「主类型」一行 —— 它原本完全依赖模型归一化，
  * 没有任何代码层兜底；模型层移除后宁可整行不显示，也不猜。
+ *
+ * 1.5.5 起也不再有「播放来源」与「数据源」两行 —— 两条信息在同一页
+ * 里**各已出现过一次**，留在侧栏纯属重复：
+ *   · 播放来源 → 顶部 chips 区（vod_meta 的 chip-source，同一个 vod_play_from）
+ *   · 数据源   → 页头的 source-tab 标签栏（$source，无需重复展示）
+ * 侧栏原本是同一份数据的**第二份**，删掉后每条信息恰好出现一次。
  */
 $ep = episodes(is_array($detail ?? null) ? $detail : [], intval($playCount ?? 0));
 ?>
@@ -87,19 +93,8 @@ $ep = episodes(is_array($detail ?? null) ? $detail : [], intval($playCount ?? 0)
             <dt>更新</dt><dd><?= h($meta['time']) ?></dd>
         <?php endif; ?>
 
-        <?php
-        // 同 vod_meta：vod_play_from 是逗号分隔的来源名，必须先切分再展示。
-        $pfList = playFromList($meta['play_from'] ?? '');
-        if ($pfList): ?>
-            <dt>播放来源</dt>
-            <dd><?= implode('、', array_map('h', $pfList)) ?>
-                <?= $meta['play_server'] !== '' && $meta['play_server'] !== 'no' ? ' · ' . h($meta['play_server']) : '' ?></dd>
-        <?php endif; ?>
-
         <?php if ($meta['letter'] !== '' && $meta['pinyin'] === ''): ?>
             <dt>首字母</dt><dd><?= h($meta['letter']) ?></dd>
         <?php endif; ?>
-
-        <dt>数据源</dt><dd><?= h(($source['name'] ?? '') ?: '未知') ?></dd>
     </dl>
 </aside>
