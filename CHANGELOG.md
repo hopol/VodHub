@@ -47,7 +47,59 @@
 - **渲染实测**：侧栏共 15 个 `<dt>` 行，「播放来源」与「数据源」**均已消失**，
   无 PHP Warning / Undefined，其余 15 项照常
 
----
+
+### 契约 14：渲染层点名要的文件，`default` 必须真的有
+
+**本版测试侧的全部改动** —— 不改任何运行时行为。
+
+它守的是一个此前**一条判据都没有**的故障面（写它时 grep `tests/` 里 `renderTemplate`：
+**0 处是断言，3 处只是注释**）：
+
+```
+renderTemplate('X')  文件缺 → 显式 500（exit('模板页面缺失：X')）
+tplPartial('X')      文件缺 → 静默 return，那一段从页面上凭空消失
+tplInclude('X')      文件缺 → 回退 _noop 空壳，头部/尾部凭空消失
+```
+
+后两种**不报错，只是少了东西** —— 比 500 还难查。1.3.12 的模板去重正是靠
+「回退 default」活着，default 兜不住时表现就是「某个区块不见了」。
+
+**判据只守一件事**：渲染层点名了 X ⇒ `default` 模板里必须有 X。
+`default` 是三处回退链的终点，它有，三处全安全。
+判据**扫出来**（`t_contract_files` 递归 + `t_contract_code` 剥注释，只认字面量首参），
+并配了**三个反向自检**防空转（须扫到 ≥5/≥3/≥2 个名字，且每个首参都得像文件名）。
+
+**注入验证三条分支，全部如期变红**，且指出**是谁点名了它**：
+
+```
+挪走 list.php     → renderTemplate('list') 缺失（由 list.php 点名）
+挪走 vod_side.php → tplPartial('vod_side') 缺失（由 play.php 点名）
+挪走 header.php   → tplInclude('header.php') 缺失（6 处点名，全部列出）
+```
+
+### 顺带：README 首页公布两个演示站
+
+顶部导航加入口，首个内容区加 `## 🖥 在线演示`：
+
+| 演示站 |
+|---|
+| **vodhub.gt.tc** |
+| **vodhub.ct.ws** |
+
+发布前做过只读安全核验，两站**均通过**：
+
+```
+/runtime/data.db                ⛔ 403
+/templates/default/index.php    ⛔ 403
+/includes/functions.php         ⛔ 403   ← 1.5.3 那条新规则已生效
+/runtime/                       ⛔ 403
+/                               200（前台公开，无需密码）
+/admin.php                      200 且是登录表单（受保护）
+```
+
+文案刻意**不写版本号、不放 curl 命令** —— 版本号会随升级过期而 README 无机制提醒，
+curl 示例当时实测跑不通（HEAD 请求拿不到响应），写上去就是留下一句未验证的话。
+
 
 ## [1.5.4] - 2026-10-07
 
