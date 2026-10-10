@@ -70,21 +70,31 @@ jobs:
       - name: 模板结构完整性
         run: |
           set -euo pipefail
-          # ⚠ 1.3.12 模板去重后，本步骤的判据必须同步改 —— 否则会一直红。
+          # ⚠ 本步骤的清单必须与 tests/test_contracts.php 的 TPL_MUST_HAVE 一致
+          #   —— 不一致就说明有人只改了一边。契约 15 钉住这件事。
+          #
+          #   本项目 1.3.12 起就在注释里写着「判据必须同步改，否则会一直红」，
+          #   而 1.5.1 恰恰只改了契约 5 没改这里 ⇒ 1.5.3 起 5 次 CI 连红。
+          #   两个来源写同一份清单，就会有「忘了同步」的那一天。
           #
           # 去重前：每套模板都必须有 9 个页面文件 + theme.json + style.css。
-          # 去重后：**只有 theme.json / style.css / header.php 是模板专属的**，
+          # 1.3.12 去重后：只有 theme.json / style.css 是模板专属的，
           # 其余页面文件（index/list/play/search/history/login/footer/player_script
           # 与 partials/*）在 default 之外已全部删除，缺失时由
           # renderTemplate() / tplPartial() 回退到 default。
           #
-          # 为什么能删：这两个函数本来就有回退逻辑，且 tplExists() 的判据
-          # 在 1.3.12 改成了「有 theme.json」—— 改之前只认 index.php，
-          # 删掉 index.php 会让非 default 模板**静默整个失效且不报错**。
-          # 详见 includes/template.php 的 tplExists() 注释。
+          # 1.5.1 又并掉了最后一份：4 套模板的 header.php 删除，头部全站只剩
+          # templates/default/header.php 一份，主题差异收进 theme.json 的
+          # style / search_ph。所以 header.php **不在**下面的清单里 ——
+          # 它反而**不允许**出现在非 default 模板（契约 5 有一条反向断言）。
           #
-          # theme.json 现在是「这个模板存在」的标记，**不可删**。
-          required="theme.json header.php"
+          # 为什么能删：tplInclude() 本来就有 [当前模板 → default] 的回退，
+          # 且 tplExists() 的判据在 1.3.12 改成了「有 theme.json」——
+          # 改之前只认 index.php，删掉 index.php 会让非 default 模板
+          # **静默整个失效且不报错**。详见 includes/template.php 的注释。
+          #
+          # theme.json 是「这个模板存在」的标记，**不可删**。
+          required="theme.json"
           fail=0
           for dir in templates/*/; do
             tpl=$(basename "$dir")
@@ -145,7 +155,8 @@ jobs:
           #      一个不会变红的测试等于没有测试 —— 本项目踩过
           #      「注释掉 global 后回归测试依然全绿」的坑。
           #
-          #      1.3.11 从 4 处扩到 8 处，1.3.12 扩到 10 处，1.3.13 扩到 12 处。
+          #      1.3.11 从 4 处扩到 8 处，1.3.12 扩到 10 处，1.3.13 扩到 12 处，
+          #      1.5.5 之后扩到 13 处（第 13 条 = 本文件自己：契约 15 的比对对象）。
           #      每条新增注入都对应一次真实事故，
           #      选取标准与对应关系见 tests/ci-check.php 的文件头。
           php tests/ci-check.php

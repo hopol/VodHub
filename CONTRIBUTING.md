@@ -175,20 +175,25 @@ function example(string $name): string {
 
 ### 必须
 
-1. **目录结构完整**，以下文件缺一不可：
+1. **目录结构完整**，以下两个文件缺一不可：
 
    ```
    templates/<你的模板名>/
-   ├── theme.json
-   ├── header.php  footer.php
-   ├── index.php   list.php   play.php
-   ├── search.php  history.php login.php
-   ├── player_script.php
-   ├── style.css
-   └── partials/vod_grid.php
+   ├── theme.json      # 必需 —— 也是「这套模板存在」的标记
+   └── style.css       # 必需 —— 主题自己的样式
    ```
 
-   > 缺失的页面会自动回退到 `default` 模板，但**能不回退就不回退**。
+   > ⚠ **1.5.1 起不要再写 `header.php`**：头部全站只有
+   > `templates/default/header.php` 一份，主题差异收进 `theme.json` 的
+   > `style` / `search_ph`。**自带 header.php 会被契约 5 直接判红**
+   > （「模板头部只有一份」那条断言）。
+   >
+   > 页面文件（`index` / `list` / `play` / `search` / `history` / `login` /
+   > `player_script` / `footer` 与 `partials/*`）同理：**缺了会自动回退 default，
+   > 能回退就回退**。只有你的模板确实需要不同内容时才自带副本，
+   > 并且要把它登记进 `TPL_MAY_DIFFER` —— **与 default 逐字节相同的副本会被判红**
+   > （仓库里目前只有 `bilibili/list.php` 与 `bilibili/partials/vod_grid.php`
+   > 是这种「必须不同」的副本）。
 
 2. **`theme.json` 填完整**：
 
@@ -197,11 +202,17 @@ function example(string $name): string {
      "title": "模板显示名",
      "description": "一句话说明适合什么风格的接口",
      "cover_mode": "wide",
-     "columns": 5
+     "columns": 5,
+     "style": "templates/<你的模板名>/style.css",
+     "search_ph": "搜索影片名称…"
    }
    ```
 
    `cover_mode` 取值：`wide`（宽图 16:9）/ `tall`（竖图 2:3）/ 其他如 `3:4`。
+
+   > ⚠ `style` 对**非 default** 模板是**必填**（契约 5 会判）——
+   > 它是 `<head>` 里那条 `<link>` 的地址。留空等于这套主题**静默丢掉自己的配色**，
+   > 页面照常渲染，只是变成默认主题的样子。
 
 3. **封面比例必须走 CSS 变量**，否则后台改了不生效：
 

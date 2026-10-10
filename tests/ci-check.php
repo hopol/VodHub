@@ -8,7 +8,7 @@
  *
  * 做两件事：
  *   ① 读 tests/run.php --json 的输出，核对 pass + fails == total；
- *   ② 验证「测试本身有效」——故意改坏八处，确认每一处都会让测试变红。
+ *   ② 验证「测试本身有效」——故意改坏 13 处，确认每一处都会让测试变红。
  *
  * 第 ② 条的理由：**一个不会变红的测试等于没有测试。**
  * 本项目踩过：`global $_ADMIN_ACTION_MAP;` 被注释掉时，
@@ -320,6 +320,23 @@ $injections = [
         'file'  => 'includes/auth.php',
         'find'  => "'secure'   => vhIsHttpsRequest(),",
         'repl'  => "'secure'   => true,",
+    ],
+    [
+        // ⭐ **1.5.3 起连续 5 次 CI 红灯，而 PHP 测试一直是绿的** ——
+        //
+        //   1.5.1 删掉 4 套模板的 header.php，同一提交里把契约 5 的
+        //   TPL_MUST_HAVE 改成 ['theme.json']，**却没改 ci.yml 里那行
+        //   `required="theme.json header.php"`**。于是两把尺子各量各的：
+        //   PHP 判「不许有」、CI 判「必须有」，谁也没发现对方错了。
+        //
+        //   这正是本文件头写的四条标准里的第 ① 条 —— **真实发生过的事故**，
+        //   且被契约 15 覆盖（第 ② 条）。文件 .github/workflows/ci.yml
+        //   此前从未被注入过（第 ④ 条）。
+        'name'  => '把 CI 的模板必需文件清单改回含 header.php（复现 1.5.3 起连续 5 次红）',
+        'apply' => null,
+        'file'  => '.github/workflows/ci.yml',
+        'find'  => '          required="theme.json"',
+        'repl'  => '          required="theme.json header.php"',
     ],
 ];
 

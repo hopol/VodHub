@@ -644,7 +644,7 @@ t('guardCaps() 里每个键都有至少一个读取点', static function () use 
     foreach (['normal', 'tight', 'compact', 'protect'] as $tierName) {
         ok(
             !in_array($tierName, $keys, true),
-            "把水位档名「{$tierName}」误认成了容量上限 —— 判据把 $factor 表也扫进来了"
+            "把水位档名「{$tierName}」误认成了容量上限 —— 判据把 \$factor 表也扫进来了"
         );
     }
 
@@ -923,7 +923,7 @@ t('模板页面内部不再用 __DIR__ 硬路径 require 同级文件（那个�
     }
     eq([], $bad,
         "这些模板还在用 __DIR__ 硬路径引用同级文件：\n  " . implode("\n  ", $bad)
-        . "\n\n请改用 tplInclude('footer.php', $tplName) —— 它有 default 回退，"
+        . "\n\n请改用 tplInclude('footer.php', \$tplName) —— 它有 default 回退，"
         . "\n且 require 留在页面文件里（作用域与去重前完全一致）。"
         . "\n⚠ 这条坑实测踩过：footer.php 被删后 bilibili 的 list.php 直接 500。");
 });
@@ -1776,5 +1776,80 @@ t('renderTemplate / tplPartial / tplInclude 点名的文件在 default 里都存
         . "  · tplInclude     → 回退 _noop 空壳，头部/尾部凭空消失\n"
         . "\n「有的区块不见了」比 500 更难查 —— 这正是本判据要挡住的形状。");
 });
+
+// ══════════════════════════════════════════════════════════════════════
+// 契约 15：CI 的「模板必需文件」清单必须与契约 5 的 TPL_MUST_HAVE 是同一份
+// ══════════════════════════════════════════════════════════════════════
+//
+//  **起因是一次连续 5 次的 CI 红灯**：1.5.1 把 4 套模板的 header.php 删掉，
+//  同一提交里把契约 5 的 TPL_MUST_HAVE 从 ['theme.json','header.php'] 改成
+//  ['theme.json']，**却没改 .github/workflows/ci.yml 里那行
+//  `required="theme.json header.php"`**。结果：
+//
+//    · 1.5.3 起（1.5.0~1.5.2 那三次推送根本没触发工作流）连续 5 次 push 全红，
+//      5 个 PHP 版本的 job 全卡在「模板结构完整性」这一步；
+//    · 而 **PHP 测试一直是绿的** —— 两把尺子各量各的，谁也没发现对方错了。
+//
+//  更糟的是它们当时是**方向相反**的：契约 5 有一条断言要求非 default 模板
+//  **不许**有 header.php，CI 却要求它**必须**有 ——
+//  照 CI 的说法把 header.php 加回去，契约 5 变红；照契约 5 删掉，CI 变红。
+//  **改哪边都能让另一边红，这本身就说明有一边是错的。**
+//
+//  所以本契约**不重新判断**「模板该有哪些文件」（那是契约 5 的活，重复判断
+//  就是「同一把尺子量两次」），只判断**两处声明的是不是同一份**。
+//  两把尺子不必合并，但不能互相矛盾。
+//
+//  ⚠ 四处必须 fail-closed：工作流没了 / 步骤改名了 / required 行没了 /
+//    清单被写空 —— 任何一处都要判红。**范围写错不会红，只会安静地看错地方**
+//    （1.5.3 拆 admin.php 时实测栽过两次）。
+
+group('契约 15：CI 的模板必需文件清单与契约 5 是同一份');
+
+t('ci.yml「模板结构完整性」的 required= 与 TPL_MUST_HAVE 逐项一致', static function () use ($root): void {
+    // ---- 范围：先证明我读的是对的那一处 ----
+    $wf = $root . '/.github/workflows/ci.yml';
+    ok(is_file($wf),
+        '工作流 .github/workflows/ci.yml 不见了 —— 本判据的比对对象没了，'
+        . '必须判红（而不是安静地什么都不比）');
+
+    $src = (string) file_get_contents($wf);
+
+    // 本文件里有**两处** required="..."（另一处是 docs job 的必需文件清单）。
+    // 不限定范围就会拿 docs 的清单来比 —— 那是「范围写错、安静看错地方」。
+    $start = strpos($src, '模板结构完整性');
+    ok($start !== false,
+        'ci.yml 里找不到「模板结构完整性」这一步 —— 步骤被改名或拆掉了，'
+        . '契约 15 必须跟着改，**不能让它悄悄失效**');
+
+    $end   = strpos($src, '- name:', $start + 1);
+    $block = ($end === false) ? substr($src, $start) : substr($src, $start, $end - $start);
+
+    // 反向自检：读到的必须是模板那一步，不是 docs 那一步。
+    // docs 的清单里有 CODE_OF_CONDUCT.md，模板的没有 —— 拿它当哨兵。
+    notContains($block, 'CODE_OF_CONDUCT.md',
+        '范围界定失效：读到的是 docs job 的必需文件清单，不是「模板结构完整性」那一步');
+
+    ok(preg_match('/required="([^"]*)"/', $block, $m) === 1,
+        '「模板结构完整性」这一步里找不到 required="..." —— '
+        . '清单被改写成别的形式了（YAML 变量 / 多行 / 另一个 job），'
+        . '契约 15 必须跟着改');
+
+    // ---- 本体：两把尺子必须是同一份 ----
+    ok(TPL_MUST_HAVE !== [],
+        'TPL_MUST_HAVE 被写空了 —— 空清单会与「required=\"\"」平凡相等，'
+        . '判据变成恒绿');
+
+    $shell = preg_split('/\s+/', trim($m[1]), -1, PREG_SPLIT_NO_EMPTY);
+    eq(array_values(TPL_MUST_HAVE), array_values($shell),
+        'CI 与契约 5 对「每套模板必须有哪些文件」说了两套话 —— '
+        . '改了一边忘了另一边'
+        . "\n\n契约 5（TPL_MUST_HAVE）：" . implode(' ', TPL_MUST_HAVE)
+        . "\nCI（ci.yml required）："    . implode(' ', $shell)
+        . "\n\n两处必须逐项一致。**这不是在判断模板该有什么**（那是契约 5 的活），"
+        . "\n只判断**两处是不是同一份** —— 清单内容要改，就两处一起改。"
+        . "\n\n⚠ 本次事故：1.5.1 删了 4 份 header.php，只改契约 5 没改 CI ⇒ "
+        . "\n1.5.3 起连续 5 次 CI 红，而 PHP 测试一直是绿的。");
+});
+
 
 finish();

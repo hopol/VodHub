@@ -255,8 +255,8 @@ VodHub/
 │   │   ├── header.php / footer.php / index.php / list.php / play.php ...
 │   │   └── partials/        # vod_grid / vod_meta / vod_side
 │   └── <模板名>/             # 一套新模板通常只有 3 个文件
-│       ├── theme.json       # 元信息（名称、封面模式、列数）—— 也是「模板存在」的标记
-│       ├── theme.json       # 主题差异配置：style（样式表）+ search_ph（搜索框文案）
+│       ├── theme.json       # 元信息（名称/封面模式/列数）+ 主题差异（style / search_ph）
+│       │                     # 也是「模板存在」的标记 —— tplExists() 认它
 │       │                     # ⚠ 1.5.1 起模板**不再自带 header.php**，全站只有 default 那一份
 │       └── style.css        # 模板专属样式（CSS 变量在这里定义）
 ├── static/                  # 公共样式、app.js、hls.js（本地化）
