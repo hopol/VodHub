@@ -54,7 +54,7 @@ define('DEFAULT_ADMIN_PASSWORD', 'admin123');
 // 上游失败的负缓存：这段时间内完全不出站（消灭故障放大器）
 define('CACHE_TTL_NEG', 60);
 // 页面静态缓存目录 —— **必须留在 Web 根内**：Apache 的 0-EP 直出
-// （.htaccess 里那 6 组 RewriteCond -f）只能服务站点根之下的文件。
+// （.htaccess 里那 7 组 RewriteCond -f）只能服务站点根之下的文件。
 // 它装的是已渲染好的**公开页面**，不涉密，所以留在 Web 根内没有安全代价。
 // 注意不能放进数据目录 —— 数据目录被 .htaccess 的 runtime/ 规则整个 [F] 拦掉，
 // 静态文件会被挡在门外。

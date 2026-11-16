@@ -108,22 +108,30 @@ function adminActionAddSource(array $post): string {
 
 function adminActionUpdateSource(array $post): string {
         $id   = intval($post['id'] ?? 0);
-        $name = trim((string) ($post['name'] ?? ''));
-        $url  = trim((string) ($post['api_url'] ?? ''));
+        $name = trim((string) (is_scalar($post['name'] ?? null) ? $post['name'] : ''));
+        $url  = trim((string) (is_scalar($post['api_url'] ?? null) ? $post['api_url'] : ''));
         $sort = intval($post['sort'] ?? 0);
-        $note = trim((string) ($post['note'] ?? ''));
-        $tpl  = trim((string) ($post['template'] ?? ''));
+        $note = trim((string) (is_scalar($post['note'] ?? null) ? $post['note'] : ''));
+        $tpl  = trim((string) (is_scalar($post['template'] ?? null) ? $post['template'] : ''));
         $gid  = intval($post['group_id'] ?? 0);
         $imgProxy = intval($post['img_proxy'] ?? 0) === 1 ? 1 : 0;
-        $imgHosts = cleanHostList((string) ($post['img_hosts'] ?? ''));
+        $imgHosts = cleanHostList((string) (is_scalar($post['img_hosts'] ?? null) ? $post['img_hosts'] : ''));
         $enabled = intval($post['enabled'] ?? 0) === 1 ? 1 : 0;
         if ($id <= 0 || $name === '' || $url === '') {
             return '⚠️ 参数不完整';
-        } else {
-            // 白名单可选：留空表示不限制主机（仍靠内网/保留地址拦截兜底）
-            updateSource($id, $name, $url, $enabled, $sort, $note, $tpl, $gid, $imgProxy, $imgHosts);
-            return '✅ 已更新数据源「' . $name . '」';
         }
+        // ★ 1.5.6：先确认 ID 存在 —— 原来 ID 不存在也返回「已更新」，
+        //   站长以为改成功了，实际什么都没发生。
+        if (!getSource($id)) {
+            return '⚠️ 数据源不存在（id=' . $id . '）';
+        }
+        // ★ 1.5.6：协议校验（add_source 有、update_source 漏了 —— 两处必须一致）
+        if (!preg_match('#^https?://#i', $url)) {
+            return '⚠️ 接口地址必须以 http:// 或 https:// 开头';
+        }
+        // 白名单可选：留空表示不限制主机（仍靠内网/保留地址拦截兜底）
+        updateSource($id, $name, $url, $enabled, $sort, $note, $tpl, $gid, $imgProxy, $imgHosts);
+        return '✅ 已更新数据源「' . $name . '」';
 }
 
 function adminActionDeleteSource(array $post): string {
@@ -158,6 +166,9 @@ function adminActionAccessSettings(array $post): string {
         if ($pwd !== '') {
             // 只有填了新密码才更新；留空表示保持原密码
             setSetting('access_password', password_hash($pwd, PASSWORD_DEFAULT));
+            // ★ 1.5.6：改了访问密码，本会话自己的访问凭证也跟着失效（指纹变了）。
+            //   不主动清的话，站长改完密码后前台会突然要重新登录，但原因不明。
+            unset($_SESSION[SESS_ACCESS_OK], $_SESSION['access_fp']);
         }
         if ($enabled === '1' && $oldHash === '' && $pwd === '') {
             // 旧密码为空、本次也没填新密码，无法启用保护
@@ -182,7 +193,19 @@ function adminActionChangeAdminPassword(array $post): string {
         } elseif ($new !== $new2) {
             return '⚠️ 两次输入的新密码不一致';
         } else {
-            setSetting('admin_password', password_hash($new, PASSWORD_DEFAULT));
+            $hash = password_hash($new, PASSWORD_DEFAULT);
+            setSetting('admin_password', $hash);
+            // ★ 1.5.6：改密码后同步更新**会话指纹**，否则自己被自己踢出去。
+            //
+            //   isAdminOk() 用「会话里的指纹 == 当前 admin_password 哈希」判登录态，
+            //   于是改完密码的同一次请求里 requireAdmin() 再跑一次就对不上 →
+            //   渲染登录页并 exit，**「✅ 管理密码已修改」这条消息永远不会被看到**，
+            //   站长以为没改成功、又改一次。
+            //
+            //   指纹机制本身是对的（换密码该让所有旧 cookie 失效），
+            //   缺的只是「自己这个会话」要跟着换。
+            $_SESSION['admin_fp'] = $hash;
+            session_regenerate_id(true);
             return '✅ 管理密码已修改';
         }
 }
@@ -233,14 +256,17 @@ function adminActionAddGroup(array $post): string {
 
 function adminActionUpdateGroup(array $post): string {
         $gid   = intval($post['id'] ?? 0);
-        $gname = trim((string) ($post['group_name'] ?? ''));
+        $gname = trim((string) (is_scalar($post['group_name'] ?? null) ? $post['group_name'] : ''));
         $gsort = intval($post['group_sort'] ?? 0);
         if ($gid <= 0 || $gname === '') {
             return '⚠️ 参数不完整';
-        } else {
-            updateGroup($gid, $gname, $gsort);
-            return '✅ 分组已改名为「' . $gname . '」';
         }
+        // ★ 1.5.6：先确认分组存在（同 adminActionUpdateSource）
+        if (!getGroup($gid)) {
+            return '⚠️ 分组不存在（id=' . $gid . '）';
+        }
+        updateGroup($gid, $gname, $gsort);
+        return '✅ 分组已改名为「' . $gname . '」';
 }
 
 function adminActionDeleteGroup(array $post): string {
@@ -313,10 +339,13 @@ function adminActionSiteTemplate(array $post): string {
         // 站点默认模板
         $tpl = trim((string) ($post['site_template'] ?? ''));
         if ($tpl === '' || !tplExists($tpl)) {
-            return '⚠️ 模板不存在：' . h($tpl);
+            return '⚠️ 模板不存在：' . $tpl;
         } else {
             setSetting('site_template', $tpl);
-            return '✅ 站点默认模板已设为「' . h(tplMeta($tpl)['title']) . '」';
+            // ⚠ 1.5.6：消息**不在这里转义** —— admin.php 输出时统一 `h($msg)`。
+            //   原来这里 h() 一次、admin.php 又 h() 一次 → **双重转义**
+            //   （`&` 显示成 `&amp;`）。统一「只在输出侧转义」。
+            return '✅ 站点默认模板已设为「' . (string) tplMeta($tpl)['title'] . '」';
         }
 }
 
@@ -349,7 +378,7 @@ function adminActionEditTemplate(array $post): string {
         }
         setSetting('tpl_vars_' . $tpl, $clean ? json_encode($clean, JSON_UNESCAPED_UNICODE) : '');
         return $clean
-            ? '✅ 已保存「' . h(tplMeta($tpl)['title']) . '」的样式调整（' . count($clean) . ' 项）'
+            ? '✅ 已保存「' . (string) tplMeta($tpl)['title'] . '」的样式调整（' . count($clean) . ' 项）'
             : '⚠️ 没有有效的样式值被保存';
 }
 
@@ -360,7 +389,7 @@ function adminActionResetTemplate(array $post): string {
             return '⚠️ 模板不存在';
         }
         setSetting('tpl_vars_' . $tpl, '');
-        return '✅ 已恢复「' . h(tplMeta($tpl)['title']) . '」的默认样式';
+        return '✅ 已恢复「' . (string) tplMeta($tpl)['title'] . '」的默认样式';
 }
 
 /**

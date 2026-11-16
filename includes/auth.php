@@ -48,6 +48,11 @@ function sessionStart(): void {
     //   「免费主机什么都可能」。
     //
     // ⚠ 必须放在 session_start() **之前** —— 之后设置无效。
+    // ★ 1.5.6：拒绝「被塞进来的会话 ID」（会话固定攻击）。
+    //   PHP 默认 `session.use_strict_mode=0` —— 会接受攻击者预设的 SID。
+    //   `session_regenerate_id()` 在登录时能兜住一部分，但严格模式是根治：
+    //   未由本站生成的 SID 会被丢弃、换发新的。必须在 session_start() 之前设。
+    @ini_set('session.use_strict_mode', '1');
     session_set_cookie_params([
         'httponly' => true,                                   // 防 JS 读取会话 ID
         'samesite' => 'Lax',                                  // 防跨站发送；POST 天然被阻断
@@ -98,20 +103,47 @@ function sessionRelease(): void {
     }
 }
 
-/** 前台是否已通过访问密码校验 */
+/**
+ * 前台是否已通过访问密码校验。
+ *
+ * ★ 1.5.6：与后台同构，加**会话指纹**（= 访问密码哈希）。
+ *   原来只看 `$_SESSION[SESS_ACCESS_OK]` 这个布尔值，于是
+ *   **改访问密码、或「关闭再启用」之后，所有旧会话继续有效**
+ *   （最长到 `session.gc_maxlifetime=86400`，即 1 天）。
+ *   后台对管理密码早就做了指纹绑定，前台这层一直缺。
+ *
+ * ★ 1.5.6：**先判设置再开会话**（性能，见下方说明）。
+ *   原来是「先 sessionStart() 再判断是否启用访问密码」，于是
+ *   公开站点也给**每个匿名访客**建会话文件 + 发 Set-Cookie。
+ *   前台没有任何页面用 `$_SESSION`（已 grep 确认，只有 login/admin/logout 用），
+ *   这是纯开销，也让「页面静态化 0 EP」在缓存未命中时打了折扣。
+ */
 function isAccessOk(): bool {
-    sessionStart();
     if (setting('access_enabled') !== '1') {
-        return true; // 未启用访问密码，直接放行
+        return true; // 未启用访问密码，直接放行（**不开会话**）
     }
-    return !empty($_SESSION[SESS_ACCESS_OK]);
+    sessionStart();
+    if (empty($_SESSION[SESS_ACCESS_OK])) {
+        return false;
+    }
+    // 指纹必须与当前访问密码哈希一致，否则是旧会话（改过密码/重开过保护）→ 作废
+    $fp = (string) ($_SESSION['access_fp'] ?? '');
+    if ($fp === '' || !hash_equals((string) setting('access_password'), $fp)) {
+        unset($_SESSION[SESS_ACCESS_OK], $_SESSION['access_fp']);
+        return false;
+    }
+    return true;
 }
 
 /** 前台访问拦截：未通过则跳转登录页 */
 function requireAccess(): void {
     guardTick();          // 顺带做磁盘 GC（内部按 5 分钟节流）
     if (isAccessOk()) {
-        csrfToken();      // ★ 放锁前先把 CSRF 落盘 —— 渲染阶段不会再写会话
+        // ★ 1.5.6：CSRF 令牌**只有开了访问密码才需要**（登录页是前台唯一用 CSRF 的地方）。
+        //   原来无条件 csrfToken() → 每个匿名访客都建会话文件，纯开销。
+        if (setting('access_enabled') === '1') {
+            csrfToken();  // ★ 放锁前先把 CSRF 落盘 —— 渲染阶段不会再写会话
+        }
         sessionRelease(); // 鉴权通过 → 立刻放锁，别把锁拖到渲染与上游结束
         return;
     }
@@ -156,13 +188,34 @@ function requireAdmin(): void {
     exit;
 }
 
-/** 生成 / 校验 CSRF 令牌 */
+/**
+ * 生成 / 校验 CSRF 令牌。
+ *
+ * ★ 1.5.6：**生成后缓存在进程里，渲染阶段不再 `session_start()`**。
+ *
+ *   `requireAdmin()` 在放锁（`sessionRelease()`）之后，后台第一个
+ *   `<input name="csrf">` 就调 `csrfToken()` → `session_start()` →
+ *   **锁被重新拿回来并一直持有到脚本结束**（包括全部 DB 查询与文件读取）。
+ *   注释里那句「渲染阶段不再需要写会话」只对前台成立 —— 后台 5 个视图里
+ *   有 10+ 个 `csrfToken()`，每个都会把锁拉回来。
+ *
+ *   现在：令牌生成后存进静态变量，后续调用直接返回，不再碰会话。
+ *   `sessionRelease()` 之后 `$_SESSION` 仍可读，所以也不需要重开。
+ */
 function csrfToken(): string {
+    static $cached = '';
+    if ($cached !== '') {
+        return $cached;
+    }
+    // 会话已经关掉时，直接读 $_SESSION（释放后仍可读）—— 不重开、不占锁
+    if (session_status() !== PHP_SESSION_ACTIVE && !empty($_SESSION[SESS_CSRF])) {
+        return $cached = (string) $_SESSION[SESS_CSRF];
+    }
     sessionStart();
     if (empty($_SESSION[SESS_CSRF])) {
         $_SESSION[SESS_CSRF] = bin2hex(random_bytes(16));
     }
-    return $_SESSION[SESS_CSRF];
+    return $cached = (string) $_SESSION[SESS_CSRF];
 }
 
 function verifyCsrf(?string $token): bool {
@@ -170,6 +223,22 @@ function verifyCsrf(?string $token): bool {
     return !empty($token)
         && !empty($_SESSION[SESS_CSRF])
         && hash_equals($_SESSION[SESS_CSRF], (string) $token);
+}
+
+/**
+ * 管理密码是否仍是出厂默认值（`admin123`）。
+ *
+ * 1.5.6 加：后台第一屏要能一眼看出这件事 —— 否则「改了密码」和「没改」
+ * 在界面上完全一样，而攻击者只需试一个密码。
+ *
+ * @return bool true = 仍是 admin123，需要告警
+ */
+function isAdminPasswordDefault(): bool {
+    if (!function_exists('setting')) {
+        return false;
+    }
+    $hash = (string) setting('admin_password');
+    return $hash !== '' && password_verify('admin123', $hash);
 }
 
 /** 后台登录表单（未登录时直接渲染，不再额外建文件） */
@@ -201,7 +270,16 @@ function renderAdminLogin(): void {
         <input type="hidden" name="action" value="login">
         <input type="hidden" name="csrf" value="<?= csrfToken() ?>">
         <button class="btn btn-primary btn-block" type="submit">登录</button>
-        <p class="login-hint">默认密码 admin123，登录后请立即修改。</p>
+        <?php
+        // ★ 1.5.6：默认密码提示**只在仍是出厂值时**显示。
+        //   原来永远显示「默认密码 admin123」——对没改过的人是提示攻击面，
+        //   对改过的人是误导（还让人以为「是不是没保存」）。
+        $vhStillDefault = function_exists('setting')
+            && password_verify('admin123', (string) setting('admin_password'));
+        ?>
+        <?php if ($vhStillDefault): ?>
+            <p class="login-hint">默认密码 admin123，登录后请立即修改。</p>
+        <?php endif; ?>
     </form>
 </body>
 </html>

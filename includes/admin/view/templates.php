@@ -111,7 +111,7 @@
             <button class="btn btn-primary" type="submit">保存样式</button>
         </form>
         <form method="post" action="admin.php"
-              onsubmit="return confirm('确定恢复「<?= h($editTplMeta['title']) ?>」的默认样式吗？')">
+              onsubmit="return confirm(<?= json_encode('确定恢复「' . (string) $editTplMeta['title'] . '」的默认样式吗？', JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?>)">
             <input type="hidden" name="action" value="reset_template">
             <input type="hidden" name="template" value="<?= h($editTpl) ?>">
             <input type="hidden" name="csrf" value="<?= csrfToken() ?>">

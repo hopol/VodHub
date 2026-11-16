@@ -19,7 +19,7 @@ VodHub 零依赖（无 Composer、无 Node、无数据库安装），部署就�
 | 项目 | 要求 |
 |------|------|
 | PHP | **≥ 8.0** |
-| PHP 扩展 | `curl`、`pdo_sqlite`（必需），`json`、`mbstring`（PHP 8 默认自带） |
+| PHP 扩展 | `curl`、`pdo_sqlite`、`mbstring`（**三个都必需**）；`json` 是 PHP 8 核心、不可禁用 |
 | Web 服务器 | Apache 2.4 / Nginx / Caddy 均可 |
 | 数据库 | **无需安装**，自动用 SQLite 文件 |
 | Composer / Node | **不需要** |
@@ -28,7 +28,7 @@ VodHub 零依赖（无 Composer、无 Node、无数据库安装），部署就�
 
 ```bash
 php -v                 # 需要 8.0 或更高
-php -m | grep -E 'curl|pdo_sqlite'
+php -m | grep -E 'curl|pdo_sqlite|mbstring'
 ```
 
 如果版本太低，程序不会白屏，而是会显示一个明确的「需要 PHP 8.0 及以上」提示页，告诉你当前版本和切换方法。

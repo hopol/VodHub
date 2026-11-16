@@ -71,6 +71,15 @@
     RewriteRule ^history\.php$ c/%{TIME_YEAR}%{TIME_MON}%{TIME_DAY}-%{TIME_HOUR}/history-%1.html [L]
 </IfModule>
 
+<IfModule mod_rewrite.c>
+    # ★ 1.5.6：部署后 tests/ 不该可被 Web 直接访问。
+    #   README 说「不必上传」，但整包上传时会被带上；tests/run.php 能被任何人
+    #   反复触发（每次跑 200+ 断言、建临时目录），是免费主机上一条现成的放大器。
+    #   ⚠ 这条用 RewriteRule [F] 而不是 Options/AllowOverride 类指令 ——
+    #     后者需要额外权限，会让整站 500（见 guardHtAudit() 的说明）。
+    RewriteRule ^tests/ - [F,L]
+</IfModule>
+
 <IfModule mod_headers.c>
     <FilesMatch "\.(css|js)$">
         Header set Cache-Control "public, max-age=604800"
@@ -87,5 +96,12 @@
     </FilesMatch>
     <FilesMatch "\.php$">
         Header setifempty Cache-Control "no-cache, must-revalidate"
+    </FilesMatch>
+    # ★ 1.5.6：静态 HTML（页面缓存直出的那批）必须 no-cache。
+    #   原来只给了 css/js/图片/PHP，`.html` 靠浏览器**启发式缓存**（取 Last-Modified
+    #   的 10% 当保鲜期），于是换小时桶后用户仍可能看到过期页。
+    #   页面缓存本身有小时桶过期，那是服务端的；浏览器这一层要自己管。
+    <FilesMatch "\.html$">
+        Header set Cache-Control "no-cache, must-revalidate"
     </FilesMatch>
 </IfModule>

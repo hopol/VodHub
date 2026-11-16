@@ -55,18 +55,22 @@
             <label class="field">
                 <span>首页补拉预算（秒）</span>
                 <select name="warm_budget">
-                    <?php $curWb = max(0, intval(setting('warm_budget', '6'))); ?>
+                    <?php $curWb = max(0, intval(setting('warm_budget', '2'))); ?>
                     <option value="0" <?= $curWb === 0 ? 'selected' : '' ?>>0（不自动补拉）</option>
-                    <?php foreach ([1, 2, 3, 4, 5, 6, 8, 10] as $w): ?>
-                        <option value="<?= $w ?>" <?= $curWb === $w ? 'selected' : '' ?>><?= $w ?> 秒<?= $w === 6 ? '（推荐）' : '' ?></option>
+                    <?php foreach ([1, 2] as $w): ?>
+                        <option value="<?= $w ?>" <?= $curWb === $w ? 'selected' : '' ?>><?= $w ?> 秒<?= $w === 2 ? '（推荐）' : '' ?></option>
                     <?php endforeach; ?>
                 </select>
                 <small class="muted">
-                    清空接口缓存后，首页要为**每个数据源**各请求一次上游取分类。
-                    这里限制的是**单次请求最多花多少秒**，用满就不再拉 ——
+                    清空接口缓存后，首页要为<b>每个数据源</b>各请求一次上游取分类。
+                    这里限制的是<b>单次请求最多花多少秒</b>，用满就不再拉 ——
                     拉不完的下次访问继续，已成功的都已落盘、进度不丢。
                     <b>先确认你的网关超时</b>：3 秒超时的主机请选 ≤2 秒，否则照样 502；
                     选 0 = 不自动补拉，首页只显示本地已缓存的分类（没有就提示「无法获取分类」）。
+                    <br><b>⚠ 上限是 2 秒</b>：整页出站预算（<code>PAGE_DEADLINE_BUDGET</code>）
+                    只有 2.5 秒，比它大的值会被钳到 2.5 —— 那是防网关 502 的硬约束，
+                    不能靠这一项放宽。以前提供的 5/6/8/10 秒实际都等价于 2.5 秒，
+                    1.5.6 起只给真实的选项（0/1/2），免得你以为设了 10 秒就有 10 秒。
                 </small>
             </label>
             <input type="hidden" name="csrf" value="<?= csrfToken() ?>">
@@ -183,7 +187,7 @@
         <h3 class="admin-subtitle">🔋 极致低功耗状态</h3>
         <p class="muted" style="color:#a94442">
             ⚠️ 无法显示 —— <b><?= h($why) ?></b><br>
-            <b>处理：</b><?= $hint ?><br>
+            <b>处理：</b><?= h($hint) ?><br>
             <b>影响面：</b>仅本状态栏；下方「系统缓存」照常可用，
             <b>前台也能正常打开</b>（新文件已自带默认值兜底）。
         </p>

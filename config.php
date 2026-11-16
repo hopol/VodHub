@@ -25,23 +25,42 @@ if (PHP_VERSION_ID < 80000) {
     );
 }
 
-// 同时要求关键扩展，缺了也是白屏
-foreach (['curl', 'pdo_sqlite'] as $requiredExt) {
-    if (!extension_loaded($requiredExt)) {
-        if (!headers_sent()) {
-            header('HTTP/1.1 500 Internal Server Error');
-            header('Content-Type: text/html; charset=utf-8');
-        }
-        exit(
-            '<!DOCTYPE html><html lang="zh-CN"><meta charset="utf-8">'
-            . '<title>缺少 PHP 扩展</title>'
-            . '<body style="font-family:sans-serif;padding:40px;line-height:1.8">'
-            . '<h1>缺少必需的 PHP 扩展</h1>'
-            . '<p>缺失扩展：<b>' . htmlspecialchars($requiredExt, ENT_QUOTES, 'UTF-8') . '</b></p>'
-            . '<p>请在空间面板中启用 <code>curl</code> 与 <code>pdo_sqlite</code> 扩展后重试。</p>'
-            . '</body></html>'
-        );
+// 同时要求关键扩展，缺了也是白屏。
+//
+// ⚠⚠ **`mbstring` 必须在清单里（1.5.6 加）**：它是**独立扩展**，不是 PHP 8 核心
+//   的一部分（`json` 才是 8.0 起不可禁用）。项目里 `mb_strtolower`（列表页/搜索页
+//   的 `searchHaystack()`）、`mb_strlen`（播放页 `buildMeta()`）、`mb_substr`
+//   （后台未知 action 的提示）都在必经路径上，缺了就是 **Fatal**：
+//     · 列表页 / 搜索页 → 整页 500
+//     · 播放页         → 整页 500
+//     · 后台未知 action → 500（恰好在站长排查「服务器版本不对」时炸掉）
+//
+//   `docs/deployment.md` 原先写着「`json`、`mbstring`（PHP 8 默认自带）」——
+//   那句是**错的**，于是「缺扩展」被归因成「代码坏了」或「升级包没传全」。
+//
+// ⚠ 报错文案**列出全部缺失项**，不再把扩展名写死在句子里 ——
+//   否则加一个扩展就要改一次文案，又会漂移。
+$requiredExts = ['curl', 'pdo_sqlite', 'mbstring'];
+$missingExts  = array_values(array_filter($requiredExts, static fn (string $e): bool => !extension_loaded($e)));
+if ($missingExts !== []) {
+    if (!headers_sent()) {
+        header('HTTP/1.1 500 Internal Server Error');
+        header('Content-Type: text/html; charset=utf-8');
     }
+    $missList = htmlspecialchars(implode('、', $missingExts), ENT_QUOTES, 'UTF-8');
+    exit(
+        '<!DOCTYPE html><html lang="zh-CN"><meta charset="utf-8">'
+        . '<title>缺少 PHP 扩展</title>'
+        . '<body style="font-family:sans-serif;padding:40px;line-height:1.8">'
+        . '<h1>缺少必需的 PHP 扩展</h1>'
+        . '<p>缺失扩展：<b>' . $missList . '</b></p>'
+        . '<p>请在空间面板中启用下列扩展后重试：<br><code>'
+        . htmlspecialchars(implode(' / ', $requiredExts), ENT_QUOTES, 'UTF-8')
+        . '</code></p>'
+        . '<p style="color:#666">（<code>mbstring</code> 是独立扩展，不是 PHP 8 自带的 ——'
+        . '缺它会让列表页与播放页直接 500。）</p>'
+        . '</body></html>'
+    );
 }
 
 if (!function_exists('vhGetEnv')) {
@@ -67,7 +86,7 @@ if (!function_exists('vhGetEnv')) {
 define('APP_NAME', '影视聚合站');
 
 // 版本号（与 CHANGELOG.md 保持一致）
-define('APP_VERSION', '1.5.5');
+define('APP_VERSION', '1.5.6');
 
 // ================================================================
 // 数据目录（安全基线 · 无 .htaccess 也能守住的那一条）
@@ -129,6 +148,65 @@ function vhDirUsable(string $dir): bool {
  *
  * 幂等、廉价（已存在就直接返回），建目录的每个点各调一次。
  */
+/**
+ * 路径是否落在 Web 根之内（1.5.6）。
+ *
+ * 用 `$_SERVER['DOCUMENT_ROOT']` + `realpath` 实测，**不用 `dirname(__DIR__)` 猜** ——
+ * 后者只有在「应用就在 Web 根」时才等于 Web 根，子目录部署时是错的
+ * （见 vhResolveDataDir() ③ 的说明）。
+ *
+ * ⚠ realpath 对不存在的路径返回 false，此时退回字面比对
+ *   （与 guardSessionExposure() 同一套处理，理由见那里）。
+ *
+ * @return bool true = 在 Web 根内（需要处置）；false = 在 Web 根外（安全）
+ */
+function vhPathInsideWebRoot(string $dir): bool {
+    $docroot = trim((string) ($_SERVER['DOCUMENT_ROOT'] ?? ''));
+    if ($docroot === '') {
+        return false;   // 拿不到 Web 根（CLI / 异常环境）：不误判成「站内」
+    }
+    $nroot = rtrim(str_replace('\\', '/', (string) $docroot), '/');
+    if ($nroot === '') {
+        return false;
+    }
+    $real = realpath($dir);
+    $norm = rtrim(str_replace('\\', '/', (string) ($real !== false ? $real : $dir)), '/');
+    return $norm === $nroot || str_starts_with($norm, $nroot . '/');
+}
+
+/**
+ * 给「落在 Web 根内」的数据目录补两道防线（1.5.6）。
+ *
+ * `.htaccess` 的 `runtime/` 规则拦不到同级的 `vodhub-data/`，所以必须就地补：
+ *   1. `.htaccess` → `Require all denied`（Apache 2.4）+ `Deny from all`（2.2 兼容）；
+ *      两者都包在 `<IfModule>` 里，且**不使用 `Options` / `php_value`**
+ *      （那两类需要 AllowOverride Options，多数免费主机不给，会让整站 500 ——
+ *       详见 guardHtAudit() 的说明）。
+ *   2. `index.html` → 挡目录列表（不依赖 AllowOverride，见 vhGuardIndex()）。
+ *
+ * ⚠ 两道都只是「尽力」：**真正的解法是把数据目录移出 Web 根**
+ *   （见 docs/deployment.md「数据目录」一节）。这里只保证
+ *   「站长没来得及移」时不至于裸奔。
+ */
+function vhGuardDataDir(string $dir): void {
+    static $done = [];
+    if (isset($done[$dir]) || !is_dir($dir)) {
+        return;
+    }
+    $done[$dir] = true;
+
+    $ht = $dir . '/.htaccess';
+    if (!is_file($ht)) {
+        @file_put_contents($ht,
+            "# VodHub：数据目录落在 Web 根内，本文件拒绝一切 HTTP 访问。\n"
+            . "# ⚠ 根治办法是把数据目录移出 Web 根（docs/deployment.md「数据目录」）。\n"
+            . "<IfModule mod_authz_core.c>\n    Require all denied\n</IfModule>\n"
+            . "<IfModule !mod_authz_core.c>\n    Order allow,deny\n    Deny from all\n</IfModule>\n"
+        );
+    }
+    vhGuardIndex($dir);
+}
+
 function vhGuardIndex(string $dir): void {
     static $done = [];
     if (isset($done[$dir]) || $dir === '' || !is_dir($dir)) {
@@ -163,7 +241,13 @@ function vhResolveDataDir(): array {
     if (trim($spec) !== '') {
         $spec = rtrim(trim($spec), '/');
         if ($spec !== '' && vhDirUsable($spec)) {
-            return $resolved = [$spec, true];
+            // ⚠ 1.5.6：显式指定也不能盲信「站外」——站长可能填了一个 Web 根内的路径。
+            //   与 ③ 同一套实测判定，并同样补防线。
+            $inside = vhPathInsideWebRoot($spec);
+            if ($inside) {
+                vhGuardDataDir($spec);
+            }
+            return $resolved = [$spec, !$inside];
         }
     }
 
@@ -174,9 +258,26 @@ function vhResolveDataDir(): array {
     }
 
     // ③ 全新安装：优先站外
+    //
+    // ⚠⚠ **1.5.6：「兄弟目录 = 站外」只在应用部署在 Web 根时成立**。
+    //
+    //   站点装在 `htdocs/vodhub/`（Web 根是 `htdocs/`）时，
+    //   `dirname(__DIR__)` = `htdocs` → 数据目录建在 **`htdocs/vodhub-data`**，
+    //   即 **Web 根之内**，`https://域名/vodhub-data/data.db` 可直接下载
+    //   （管理密码哈希 + 全部接口地址）；而 `DATA_DIR_OUTSIDE = true`，
+    //   后台第一屏显示「Web 根之外（不依赖 .htaccess）」——**与事实相反**。
+    //   `.htaccess` 的 `^runtime/` 规则在 `vodhub/` 下，拦不到同级的 `vodhub-data/`。
+    //
+    //   修法：**用 DOCUMENT_ROOT 实测**，落在 Web 根内的一律判「站内」，
+    //   并给它补上 `.htaccess` 拒绝访问 + `index.html`（不依赖 AllowOverride 之外的东西）。
     $outer = dirname(__DIR__) . '/vodhub-data';
     if (vhDirUsable($outer)) {
-        return $resolved = [$outer, true];
+        $inside = vhPathInsideWebRoot($outer);
+        if ($inside) {
+            // 在 Web 根内：补一道「不依赖 .htaccess 的防线」+ 把等级说清楚
+            vhGuardDataDir($outer);
+        }
+        return $resolved = [$outer, !$inside];
     }
 
     // ④ 回退站点根内（此时 .htaccess 的 runtime/ 拦截是唯一防线，后台会标红）
@@ -218,7 +319,7 @@ define('CACHE_TTL_NEG', 60);
 
 // ---------------------------------------------------------------- 极致低功耗模式
 // 页面静态缓存目录。
-// **必须留在 Web 根内**：Apache 的 0-EP 直出（.htaccess 里那 6 组 RewriteCond -f）
+// **必须留在 Web 根内**：Apache 的 0-EP 直出（.htaccess 里那 7 组 RewriteCond -f）
 // 只能服务站点根之下的文件。它装的是已渲染好的公开页面，不涉密，
 // 所以「留在 Web 根内」在安全上没有代价；列目录由 static/ 等处的空 index.html 挡。
 // 若你的主机完全用不上 rewrite，把它移出去也不影响功能（会退回第 2 层 1 EP 读盘）。

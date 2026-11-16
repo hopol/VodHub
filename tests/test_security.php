@@ -157,7 +157,28 @@ t('落盘白名单不含 svg', static function (): void {
 
 t('image/svg+xml 不再映射到 .svg 扩展名', static function (): void {
     require_once __DIR__ . '/../includes/imgcache.php';
-    eq('bin', imgCacheExt('image/svg+xml'), 'SVG 应落到 .bin，不可落成 .svg');
+    eq('', imgCacheExt('image/svg+xml'), 'SVG 不可落成 .svg，也不该落成 .bin（1.5.6：未知类型一律不落盘）');
+});
+
+t('【1.5.6】未映射的图片类型不落盘（否则写得进、读不出，白占磁盘）', static function (): void {
+    require_once __DIR__ . '/../includes/imgcache.php';
+    foreach (['image/svg+xml', 'image/heic', 'image/jxl', 'application/octet-stream'] as $mime) {
+        eq('', imgCacheExt($mime), "$mime 应返回空扩展名 = 不落盘");
+        // 文件名里不该出现任何已知扩展名（落盘判据在 imgCachePut()，这里只看命名）
+        $fn = imgCacheFileName('http://x/a.bin', $mime);
+        ok(!str_contains($fn, '.'), "$mime 不应产出带扩展名的落盘文件名，实际：$fn");
+    }
+});
+
+t('【1.5.6】落盘判据真的会拒绝未映射类型（不只是映射表变了）', static function (): void {
+    require_once __DIR__ . '/../includes/imgcache.php';
+    // imgCachePut 对未映射类型必须返回 false —— 这是「SVG 不落盘」唯一真正的实现点
+    // （改扩展名映射不够：那样会落到 .bin，写得进读不出）
+    $before = glob(dirname(__DIR__) . '/static/imgcache/*') ?: [];
+    $ok = imgCachePut('http://x/cannot-persist.svg', '<svg/>', 'image/svg+xml');
+    $after = glob(dirname(__DIR__) . '/static/imgcache/*') ?: [];
+    eq(false, $ok, '未映射类型必须拒绝落盘');
+    eq(count($before), count($after), '目录里不应多出文件');
 });
 
 t('历史遗留 .svg 仍能正确反查 MIME（否则浏览器拿到错误类型）', static function (): void {
@@ -670,4 +691,78 @@ t('两个 Web 入口文件都判了 PHP_SAPI', static function (): void {
     }
 });
 
+// ==================================================================
+// 七、1.5.6 新增的安全余量（img.php）
+// ==================================================================
+
+group('1.5.6 img.php 安全余量');
+
+t('【1.5.6】端口白名单：只放行 80/443/未指定', static function (): void {
+    $src = t_code('img.php');
+    ok(str_contains($src, 'function imgAssertPort'), '应有端口白名单函数');
+    // 原始 URL 与每跳重定向都要查
+    ok(substr_count($src, 'imgAssertPort(') >= 3,
+        '原始 URL + 重定向每跳都要调 imgAssertPort，实际调用点：'
+        . substr_count($src, 'imgAssertPort('));
+    ok(str_contains($src, "\$p !== 80 && \$p !== 443"),
+        '判据必须是「80/443 之外一律拒绝」');
+});
+
+t('【1.5.6】图片体积上限真的接上电（两道：预检 + 下载后复验）', static function (): void {
+    $src = t_code('img.php');
+    ok(str_contains($src, 'IMG_MAX_BYTES'), '应有体积上限常量');
+    ok(str_contains($src, 'CURLOPT_MAXFILESIZE'), '预检：Content-Length 超限直接拒绝');
+    ok(str_contains($src, 'strlen((string) $body) > IMG_MAX_BYTES'),
+        '复验：下载完再验一次（chunked / 伪造 Content-Length 都能绕过预检）');
+});
+
+t('【1.5.6】DNS 重绑定：把校验过的 IP 钉死给 curl', static function (): void {
+    $src = t_code('img.php');
+    ok(str_contains($src, 'CURLOPT_RESOLVE'),
+        '必须用 CURLOPT_RESOLVE 把校验过的 IP 钉死 —— 否则校验是公网 IP、执行可能变成内网 IP（TOCTOU）');
+    ok(str_contains($src, 'gethostbynamel($fetchHost)'),
+        '钉死用的 IP 必须来自解析结果（与校验同源）');
+});
+
+t('【1.5.6】重定向上限既有次数也有总时长', static function (): void {
+    $src = t_code('img.php');
+    ok(str_contains($src, 'IMG_MAX_REDIRS'), '应有跳数上限');
+    ok(str_contains($src, '$deadline'), '应有整条链的总时长预算');
+});
+
+
+// ==================================================================
+// 八、1.5.6 登录与重定向
+// ==================================================================
+
+group('1.5.6 登录与重定向');
+
+t('【1.5.6】login.php 的 redirect 过白名单（开放重定向已堵）', static function (): void {
+    $src = t_code('login.php');
+    ok(str_contains($src, 'function vhSafeRedirect'), '应有 redirect 白名单函数');
+    // 两个入口（POST / GET）都要过
+    ok(substr_count($src, 'vhSafeRedirect(') >= 3,
+        'POST 与 GET 两处都要过白名单（含函数定义），实际：' . substr_count($src, 'vhSafeRedirect('));
+});
+
+t('【1.5.6】两个登录入口都挂了限流', static function (): void {
+    ok(str_contains(t_code('admin.php'), "guardCheck('admin_login'"),
+        '后台登录必须有限流（原来是裸奔）');
+    ok(str_contains(t_code('login.php'), "guardCheck('access_login'"),
+        '前台访问密码必须有限流');
+});
+
+t('【1.5.6】管理密码默认值要能被识别出来（后台红条的判据）', static function (): void {
+    ok(str_contains(t_code('includes/auth.php'), 'function isAdminPasswordDefault'),
+        '应有 isAdminPasswordDefault()');
+    ok(str_contains(t_code('admin.php'), 'isAdminPasswordDefault()'),
+        '后台第一屏必须用它判告警');
+});
+
+t('【1.5.6】会话开了 strict_mode（防会话固定）', static function (): void {
+    ok(str_contains(t_code('includes/auth.php'), "session.use_strict_mode"),
+        '必须在 session_start() 之前开 strict_mode');
+});
+
 finish();
+

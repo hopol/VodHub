@@ -40,6 +40,19 @@ if ($source && $vodId > 0) {
 }
 
 if (!$source || !$detail) {
+    // ★ 1.5.6：残页判定（P0）。上游抖一下时 getDetail() 走到 emptyResult()，
+    //   这一页渲染成「影片不存在」，而 renderTemplate() 会把它写进 c/<时间桶>/ ——
+    //   **接下来一整小时所有访客都看到「影片不存在」**，即使上游 1 秒后恢复。
+    //
+    //   ⚠ 判据用「上游有没有报错」而不是「detail 是否为空」：detail 为空也可能是
+    //     「这 id 真的不存在」，那是正常状态、该缓存（也省得每次重问上游）。
+    if ($source && $client->lastMsg() !== '') {
+        pcVolatile();
+    }
+
+    // ★ 1.5.6：空态返回 404（原来是 200），理由同 list.php
+    http_response_code(404);
+
     // 交给模板展示空状态，模板内部会判断 $detail 是否为空
     $siteTitle = setting('site_title', APP_NAME);
     renderTemplate('play', [
@@ -66,6 +79,17 @@ if (!$source || !$detail) {
 
 $playUrls = parsePlayUrl($detail['vod_play_url'] ?? '');
 $types    = $client->getTypes();
+
+// ★ 1.5.6 残页判定续：详情拿到了、但 `vod_play_url` 解析出 0 集。
+//   页面写「该影片暂无可播放地址」，同样不该被冻一小时 ——
+//   上游可能只是这一批没给播放地址（或用了我们不认识的线路分隔符）。
+if (!$playUrls) {
+    pcVolatile();
+}
+// 分类拿不到 → 分类名/chips 缺失，同样是残页
+if (!$types) {
+    pcVolatile();
+}
 
 $meta    = buildMeta($detail, $sourceId, $types);
 

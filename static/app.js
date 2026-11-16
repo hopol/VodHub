@@ -9,6 +9,9 @@
     if (searchInput) {
         searchInput.addEventListener('keydown', function (e) {
             if (e.key === 'Enter') {
+                // ★ 1.5.6：必须 preventDefault —— 否则「表单默认提交」+「手动 submit()」
+                //   会触发两次（浏览器导航被后一次覆盖，但请求可能发两遍）。
+                e.preventDefault();
                 e.currentTarget.form.submit();
             }
         });

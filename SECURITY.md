@@ -152,7 +152,7 @@ VodHub 本身**不存储、不缓存视频文件**，只聚合你自行配置的
 SVG 内可含 `<script>`，浏览器以同源身份执行。
 
 **修法**：从 `imgCacheExts()` / `imgCacheExt()` 移除 `svg`。
-SVG 仍可经 `img.php` 实时返回，只是不落盘。
+SVG 仍可经 `img.php` 实时返回，只是不落盘（1.5.6 起连 `.bin` 也不再写 —— 见上）。
 `imgCacheMimeForPath()` 保留 `.svg` 反查（历史遗留文件仍需正确 MIME）。
 
 ### 3. 会话 Cookie 无 HttpOnly / SameSite / Secure
@@ -168,6 +168,12 @@ SVG 仍可经 `img.php` 实时返回，只是不落盘。
 
 - `includes/client.php` 的上游请求也开着 `FOLLOWLOCATION`。
   但它请求的是**管理员自己配置的数据源**（威胁模型不同），风险等级低一档，本次未改。
-- **`img.php` 与 `includes/client.php` 的 `CURLOPT_SSL_VERIFYPEER => false`**
-  尚未改为可配置。这是**已知待办项**，与本次 SSRF 修复叠加时会放大风险，建议下一版处理。
-  （审计当时还有第三处 `includes/enrich.php`，该文件已随 1.5.0 的模型层移除。）
+
+> ⚠ **本文是「历史审计记录」**（审计时点约为 1.3.4）。下面两处**已经修好**，留作背景：
+>
+> - ~~`img.php` 与 `includes/client.php` 的 `CURLOPT_SSL_VERIFYPEER => false` 尚未改为可配置~~
+>   → **1.3.4 已修**：`config.php` 的 `VODHUB_TLS_VERIFY` 默认校验、显式降级两路、
+>   后台「安全基线」可见降级状态，另有 6 条测试钉住。
+> - ~~SVG 落盘~~ → **1.3.4 已移除 `.svg` 映射**，**1.5.6 进一步收紧**：
+>   未映射类型（含 SVG）**一律不落盘**（原先会落成 `.bin`，写得进、读不出，
+>   白占磁盘且每次重新出站 —— 见 `imgCacheExt()` 说明）。

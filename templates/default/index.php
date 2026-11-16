@@ -16,12 +16,24 @@ require tplInclude('header.php', $tplName);
 <?php else: ?>
     <?php // 只渲染选中源；页头仍用全部 $sources（header.php 里的标签栏用 $sources）
     ?>
-    <?php foreach (($pageSources ?? $sources) as $src): ?>
+    <?php
+    // ★ 1.5.6：残页判定的输入。残页标记是**整页级**的，但「分类不全」是**源级**的 ——
+    //   一个源空态不该否定整页。这里把「本页要处理几个源」告诉 VodClient，
+    //   由它在最后一个源处统一判定「是否全部源都没分类」。
+    $__vhPageSources = $pageSources ?? $sources;
+    VodClient::$totalTypeSources = count($__vhPageSources);
+    VodClient::$emptyTypeSources = 0;
+    $__vhIdx = 0;
+    $__vhTotal = count($__vhPageSources);
+    ?>
+    <?php foreach ($__vhPageSources as $src): ?>
         <?php
+        $__vhIdx++;
         $client = new VodClient($src['api_url']);
-        $types = $client->getTypesLocal();   // 本地有分类缓存就只读本地（零出站）；一条都没有时自动补拉一次 ——
+        // 本地有分类缓存就只读本地（零出站）；一条都没有时自动补拉一次 ——
         // 首页是分类的唯一展示入口：拿不到分类时连「浏览全部 →」都不渲染，
         // 站内再没有路径能把这份缓存填回来（后台「测试连接」走 probe()，不落盘）
+        $types = $client->getTypesLocal($__vhIdx >= $__vhTotal);
         $sid = intval($src['id']);
         ?>
         <section class="source-block">

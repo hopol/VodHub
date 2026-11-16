@@ -451,6 +451,47 @@ t('playFromList 丢弃纯符号与空段', static function (): void {
 });
 
 // ==================================================================
+// 八·五、cleanHostList（1.5.6 修：粘贴完整 URL 被丢掉）
+// ==================================================================
+
+group('cleanHostList 域名白名单清洗');
+
+t('【1.5.6】粘贴完整图片地址必须取出 host（原先整条被丢）', static function (): void {
+    eq('img.example.com', cleanHostList('https://img.example.com/a/b/cover.jpg'),
+        '完整 URL 应取出 host —— 这是站长最自然的操作');
+});
+
+t('【1.5.6】带端口 + 路径时取出 host（原先变成文件名）', static function (): void {
+    eq('img.example.com', cleanHostList('img.example.com:8080/x.jpg'),
+        '不该变成 x.jpg');
+});
+
+t('【1.5.6】通配域名归一成裸域（原先被丢，注释却说支持）', static function (): void {
+    eq('example.com', cleanHostList('*.example.com'),
+        '通配应归一成裸域，与 imgAssertWhitelistHost() 的后缀匹配语义一致');
+});
+
+t('裸域名原样保留（不能把正常输入弄坏）', static function (): void {
+    eq('img.example.com', cleanHostList('img.example.com'));
+    eq('img.example.com', cleanHostList('https://img.example.com'));
+});
+
+t('多域名逗号分隔 + 大小写 + 去重', static function (): void {
+    eq('img1.example.com,img2.example.com', cleanHostList('img1.example.com, img2.example.com'));
+    eq('img.example.com', cleanHostList('IMG.example.com,img.example.com'));
+});
+
+t('带查询/锚点/多级路径的 URL 也能取出 host', static function (): void {
+    eq('a.b.c.example.com', cleanHostList('https://a.b.c.example.com:8443/x?y=1#z'));
+});
+
+t('非法输入安全返回空串', static function (): void {
+    eq('', cleanHostList(''));
+    eq('', cleanHostList('   '));
+    eq('', cleanHostList('<script>'));
+});
+
+// ==================================================================
 // 九、cleanTitle
 // ==================================================================
 
@@ -630,4 +671,23 @@ t('searchHaystack 拼接 type_name', static function (): void {
     contains(searchHaystack(['vod_name' => 'A', 'type_name' => '国产剧']), '国产剧');
 });
 
+
+// ==================================================================
+// 十·五、renderPagination 分页钳制（1.5.6）
+// ==================================================================
+
+group('renderPagination 分页钳制');
+
+t('【1.5.6】page 超出 pagecount 时钳回去（原先渲染出空壳分页）', static function (): void {
+    $h = renderPagination(99, 3, 'list.php?source=1&type=0');
+    ok($h !== '', 'page > pagecount 不该返回空');
+    ok(str_contains($h, 'page=3') || str_contains($h, '>3<'), '应渲染到第 3 页');
+});
+
+t('【1.5.6】page < 1 时钳到 1', static function (): void {
+    $h = renderPagination(0, 5, 'list.php');
+    ok(str_contains($h, 'page=1'), '应有第 1 页');
+});
+
 finish();
+

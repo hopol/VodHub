@@ -48,19 +48,40 @@ require tplInclude('header.php', $tplName);
         }
         empty.hidden = true;
         for (const r of arr) {
+            // ★ 1.5.6：不再用 innerHTML 拼图片地址 —— 那是 localStorage 里的
+            //   `vod_pic`（源头是上游），含 `"` 会破坏 DOM 结构。
+            //   改用 DOM API + textContent，地址与文本都不进 HTML 解析器。
             const a = document.createElement('a');
             a.className = 'vod-card';
-            a.href = 'play.php?source=' + r.source + '&id=' + r.id;
-            a.innerHTML = ''
-                + '<div class="cover">'
-                + '<img src="' + (r.pic || 'static/img/no-cover.svg') + '" alt="" loading="lazy">'
-                + (mode === 'history' && r.time
-                    ? '<span class="badge-time">' + new Date(r.time).toLocaleDateString('zh-CN') + '</span>'
-                    : '')
-                + '</div>'
-                + '<div class="vod-info"><h3></h3><p class="vod-sub"></p></div>';
-            a.querySelector('h3').textContent = r.name;
-            a.querySelector('.vod-sub').textContent = mode === 'history' ? '点击继续观看' : '我的收藏';
+            a.href = 'play.php?source=' + encodeURIComponent(String(r.source))
+                   + '&id=' + encodeURIComponent(String(r.id));
+
+            const cover = document.createElement('div');
+            cover.className = 'cover';
+            const img = document.createElement('img');
+            img.src = (r.pic || 'static/img/no-cover.svg');
+            img.alt = '';
+            img.loading = 'lazy';
+            cover.appendChild(img);
+            if (mode === 'history' && r.time) {
+                const badge = document.createElement('span');
+                badge.className = 'badge-time';
+                badge.textContent = new Date(r.time).toLocaleDateString('zh-CN');
+                cover.appendChild(badge);
+            }
+
+            const info = document.createElement('div');
+            info.className = 'vod-info';
+            const h3 = document.createElement('h3');
+            h3.textContent = r.name;
+            const p = document.createElement('p');
+            p.className = 'vod-sub';
+            p.textContent = mode === 'history' ? '点击继续观看' : '我的收藏';
+            info.appendChild(h3);
+            info.appendChild(p);
+
+            a.appendChild(cover);
+            a.appendChild(info);
             grid.appendChild(a);
         }
     }

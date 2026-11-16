@@ -24,6 +24,14 @@ function db(): PDO {
     vhGuardIndex(DATA_DIR);       // 数据目录若回退在 Web 根内，挡住列目录
 
     $pdo = new PDO('sqlite:' . DB_FILE);
+
+    // ★ 1.5.6：收紧文件权限。SQLite 默认按 umask 建（通常 0644）——
+    //   共享主机上**同机其他账户可能读到** `data.db`，里面是管理密码哈希
+    //   与全部数据源接口地址。chmod 失败静默（部分主机不让改），
+    //   但能改就改，比不改强。目录也一并收到 0700。
+    @chmod(DB_FILE, 0600);
+    @chmod(DATA_DIR, 0700);
+
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
 

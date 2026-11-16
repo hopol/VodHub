@@ -39,6 +39,10 @@ require tplInclude('header.php', $tplName);
     </div>
 <?php else: ?>
     <p class="muted search-meta">在「<?= h($source['name']) ?>」中找到 <?= formatNumber($total) ?> 条结果</p>
+    <p class="muted search-hint">
+        💡 搜索按<b>片名开头</b>匹配（上游接口的限制）：搜《理想照耀中国》请输
+        <code>理想</code> 或 <code>理想照耀</code>；输中间词（如 <code>照耀</code>）搜不到。
+    </p>
 
     <?php if (!$list): ?>
         <div class="empty">

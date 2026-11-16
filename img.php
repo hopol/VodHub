@@ -141,6 +141,9 @@ if (!in_array($scheme, ['http', 'https'], true)) {
 
 $host = strtolower((string) $parts['host']);
 
+// ★ 1.5.6：端口白名单（原始 URL）
+imgAssertPort($parts['port'] ?? false, '');
+
 // --- 1. 数据源白名单校验 ---
 // 三种失败原因分开报，避免再出现「只知道没开、不知道是缺参数还是真没开」
 // —— 同一句 proxy disabled 曾让人分不清是 s 丢了，还是这个源确实没勾选。
@@ -153,6 +156,37 @@ if (!$source) {
 }
 if ((int) ($source['img_proxy'] ?? 0) !== 1) {
     imgFail(403, 'proxy disabled for source ' . $srcId . ' [' . $source['name'] . ']');
+}
+
+// --- 1.5 本地已有副本 → 直接回吐，不做 DNS、不出站 ---
+// ⚠⚠ **本地命中必须排在白名单校验之前（1.5.6 修）**：
+//
+//   这张图此前必然通过了下面完整的三重校验（文件只能由通过校验的 URL 生成），
+//   且这里**不发起任何新请求**，所以即使域名此后被改指向内网也不会造成 SSRF ——
+//   只是回吐已经下载好的字节。这是支柱二在 img.php 这一侧的收口。
+//
+//   原来白名单校验在它**前面**，于是出现一个隐蔽的永久故障：
+//     ① 上游封面 URL 被 302 到**另一个域名**（CDN 切域很常见）；
+//     ② 首次请求白名单为空 → 放行 → 取图 → 落盘 →
+//        `learnImgHost()` 把**重定向后的域名**写进白名单；
+//     ③ 之后每次请求同一张图，先拿**原始 host** 对白名单校验 ——
+//        原始 host 不在白名单里 → **403**；
+//     ④ 即使图已经躺在本地缓存里，也走不到本地命中分支（白名单在前面）。
+//
+//   结果：开着图片代理的源，封面从「正常」变成**稳定 403**，后台看不出原因。
+//   **已经通过校验落盘的字节，不需要重新授权。**
+$localRel  = imgCacheHit($src);              // 可能带任意已知扩展名，不能只认 exact
+$localFile = $localRel !== null ? __DIR__ . '/' . $localRel : '';
+if ($localFile !== '' && is_file($localFile)) {
+    $localType = imgCacheMimeForPath($localFile);
+    while (ob_get_level() > 0) { @ob_end_clean(); }
+    header('Content-Type: ' . $localType);
+    header('Content-Length: ' . (string) filesize($localFile));
+    header('Cache-Control: public, max-age=604800');
+    header('X-Content-Type-Options: nosniff');
+    header('X-Img-Proxy: ' . IMG_PROXY_VER . '-local');
+    readfile($localFile);
+    exit;
 }
 
 // 白名单【可选】：留空表示不限制主机（很多人并不知道图片域名是什么）。
@@ -179,6 +213,29 @@ imgAssertWhitelistHost($host);
  * @param string $host 已小写的目标主机名或 IP 字面量
  * @param string $why  失败时写进日志的原因前缀（区分第 2 层与重定向中途）
  */
+/**
+ * 端口白名单（1.5.6）：只允许 80 / 443 / 未指定。
+ *
+ * ⚠ 原来**只校验 host 是否公网，不看端口**，于是
+ *   `http://公网IP:6379/` 这类可以被当作**盲 SSRF 探针**（公网 IP 上的非 HTTP 端口）。
+ *   内网地址那层拦住了 `127.0.0.1:6379`，但公网 IP 的任意端口是敞开的。
+ *
+ *   校验位置：原始 URL 与**每一跳重定向**都查（与白名单/内网校验同一套节奏）。
+ *
+ * @param string|false $port parse_url 的 port（未指定时为 false）
+ * @param string       $why  失败时写进消息的原因前缀
+ */
+function imgAssertPort($port, string $why = ''): void {
+    if ($port === false || $port === null || $port === '') {
+        return;   // 未指定端口 → 默认 80/443，放行
+    }
+    $p = (int) $port;
+    if ($p !== 80 && $p !== 443) {
+        imgFail(403, ($why !== '' ? $why . ' ' : '')
+            . 'port not allowed (' . $p . ') — 只允许 80 / 443');
+    }
+}
+
 function imgAssertPublicHost(string $host, string $why = ''): void {
     $tag = $why !== '' ? $why . ' ' : '';
 
@@ -230,6 +287,7 @@ function imgCheckRedirectTarget(string $location, string $currentUrl, int $hop):
     }
 
     $host = strtolower((string) $p['host']);
+    imgAssertPort($p['port'] ?? false, 'redirect hop ' . $hop . ':');   // 1.5.6：每跳也查端口
     imgAssertWhitelistHost($host, 'redirect hop ' . $hop . ': ');
     imgAssertPublicHost($host, 'redirect hop ' . $hop . ': ');
 
@@ -295,24 +353,6 @@ function imgAssertWhitelistHost(string $host, string $why = ''): void {
     }
 }
 
-// --- 1.5 本地已有副本 → 直接回吐，不做 DNS、不出站 ---
-// 这张图此前必然通过了下面完整的三重校验（文件只能由通过校验的 URL 生成），
-// 且这里**不发起任何新请求**，所以即使域名此后被改指向内网也不会造成 SSRF ——
-// 只是回吐已经下载好的字节。这是支柱二在 img.php 这一侧的收口。
-$localRel  = imgCacheHit($src);              // 可能带任意已知扩展名，不能只认 exact
-$localFile = $localRel !== null ? __DIR__ . '/' . $localRel : '';
-if ($localFile !== '' && is_file($localFile)) {
-    $localType = imgCacheMimeForPath($localFile);
-    while (ob_get_level() > 0) { @ob_end_clean(); }
-    header('Content-Type: ' . $localType);
-    header('Content-Length: ' . (string) filesize($localFile));
-    header('Cache-Control: public, max-age=604800');
-    header('X-Content-Type-Options: nosniff');
-    header('X-Img-Proxy: ' . IMG_PROXY_VER . '-local');
-    readfile($localFile);
-    exit;
-}
-
 // --- 2. 内网 / 保留地址拦截（白名单被误配的兜底） ---
 // ⚠ 1.3.4：这段已抽成 imgAssertPublicHost()，**每跳重定向都要重跑一次**。
 //   原因见该函数说明 —— 校验与执行之间隔着 attacker 可控的 302。
@@ -320,6 +360,18 @@ imgAssertPublicHost($host);
 
 // --- 2.5 重定向上限 ---
 const IMG_MAX_REDIRS = 3;
+
+// --- 2.6 单张图片体积上限（1.5.6）---
+//
+// ⚠⚠ 原来**完全不看大小**：`CURLOPT_RETURNTRANSFER` 整体读进内存、
+//   也不判 Content-Length 就落盘。于是一个 200 MB 的「图片」可以直接
+//   吃掉 1 GB 配额的一半 / 触发内存耗尽，而 GC 5 分钟才跑一次。
+//
+//   两道防线：
+//     ① `Content-Length` 超限 → 直接 413（不下载）；
+//     ② 下载过程中累加，超限即中止（应对 chunked / 伪造 Content-Length）。
+//   封面图正常在 100 KB 量级，5 MB 已经是极宽松的上限。
+const IMG_MAX_BYTES = 5 * 1024 * 1024;
 
 // --- 3. 拉取图片（含**手动**重定向跟随） ---
 //
@@ -340,19 +392,40 @@ $body      = false;
 $code      = 0;
 $type      = '';
 $remaining = IMG_MAX_REDIRS;
+// ★ 1.5.6：整条重定向链的**总时长预算**。
+//   原来每跳各自 4s、最多 3 跳 → 最坏 16s 占住 EP 槽位
+//   （网关 3s 的主机会直接 502）。现在把总时长锁在 8s 内。
+$deadline  = microtime(true) + 8.0;
 
 do {
     $referer = $fetchUrl === $src ? ($scheme . '://' . $host . '/')
                                  : (parse_url($fetchUrl, PHP_URL_SCHEME) . '://'
                                     . (parse_url($fetchUrl, PHP_URL_HOST) ?: $fetchHost) . '/');
 
+    // ★ 1.5.6：**把已校验的 IP 钉死**（防 DNS 重绑定）。
+    //
+    //   原来 `imgAssertPublicHost()` 用 `gethostbynamel()` 解析校验后，
+    //   curl 又**重新解析一次**——中间那点时间里 DNS 可以改成 127.0.0.1
+    //   （TOCTOU）：校验的是公网 IP，执行的是内网 IP。
+    //
+    //   修法不是「关掉 DNS」（做不到），而是让 curl 用**校验过的那个 IP**：
+    //   `CURLOPT_RESOLVE` 把 host:port:ip 钉死，校验与执行共用一份解析结果。
+    //   `imgAssertPublicHost()` 已经把全部 IP 都校验过了，这里取第一个。
+    $pinIp = '';
+    if (!filter_var($fetchHost, FILTER_VALIDATE_IP)) {
+        $ips = function_exists('gethostbynamel') ? (@gethostbynamel($fetchHost) ?: []) : [];
+        $pinIp = (string) ($ips[0] ?? '');
+    }
+
     $ch = curl_init();
-    curl_setopt_array($ch, [
+    $curlOpts = [
         CURLOPT_URL            => $fetchUrl,
         CURLOPT_RETURNTRANSFER => true,
         // 支柱四：12 s → 4 s。图片请求是全站最高频的，慢 8 秒换不到任何好处，
         // 只会白占 EP 槽位（EP 是并发计数，槽位被占越久越容易触顶）。
         CURLOPT_TIMEOUT        => 4,
+        // ★ 1.5.6：体积上限（见 IMG_MAX_BYTES 说明）
+        CURLOPT_MAXFILESIZE    => IMG_MAX_BYTES,
         CURLOPT_CONNECTTIMEOUT => 3,
         // ★ 不让 curl 自动跟随：跟随逻辑在上面，逐跳校验过才继续
         CURLOPT_FOLLOWLOCATION => false,
@@ -364,7 +437,13 @@ do {
         CURLOPT_USERAGENT      => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
             . 'Chrome/120 Safari/537.36 ImageProxy/1.0',
         CURLOPT_REFERER        => $referer,
-    ]);
+    ];
+    // DNS 钉死：host:port:ip（仅在域名且解析得到 IP 时）
+    if ($pinIp !== '') {
+        $port = (int) (parse_url($fetchUrl, PHP_URL_PORT) ?: (str_starts_with($fetchUrl, 'https:') ? 443 : 80));
+        $curlOpts[CURLOPT_RESOLVE] = [$fetchHost . ':' . $port . ':' . $pinIp];
+    }
+    curl_setopt_array($ch, $curlOpts);
     // 关键：目标站若按 Referer 校验，这里带上同域 Referer 通常可过
     curl_setopt($ch, CURLOPT_HTTPHEADER, [
         'Referer: ' . $referer,
@@ -380,6 +459,9 @@ do {
     if ($code >= 300 && $code < 400 && $redirectTo !== '') {
         if ($remaining <= 0) {
             imgFail(502, 'too many redirects (>' . IMG_MAX_REDIRS . ')');
+        }
+        if (microtime(true) > $deadline) {
+            imgFail(502, 'redirect chain exceeded total budget');
         }
         $remaining--;
         // ★ 这一行是本次修复的核心：新目标过完三重校验才继续
@@ -403,6 +485,11 @@ if ($body === false || $code !== 200 || $body === '') {
     imgFail(502, 'fetch failed' . ($code ? ' (http ' . $code . ')' : ''));
 }
 
+// ★ 1.5.6：下载完再验一次体积（chunked 响应 / 伪造 Content-Length 都能绕过预检）
+if (strlen((string) $body) > IMG_MAX_BYTES) {
+    imgFail(413, 'image too large (> ' . IMG_MAX_BYTES . ' bytes)');
+}
+
 // 只放行图片类响应，避免被当成内容入口
 if ($type !== '' && !str_starts_with($type, 'image/')) {
     imgFail(415, 'not an image');
@@ -413,7 +500,15 @@ if ($type === '') {
 
 // 自动学习：把本次实际用到的图片域名记进白名单，便于后台查看，
 // 也便于以后改成"白名单加严"模式。已存在则不动，不影响已有配置。
+//
+// ⚠ 1.5.6：**原始 host 也要记**（纵深，与上面「本地命中提前」配套）。
+//   只记重定向后的 host，会让原始 host 在白名单变非空后被挡（见上文 ①~④）。
+//   两个都记，即使将来有人把「本地命中」的位置改回去，也不会立刻复发。
 learnImgHost((int) $source['id'], $host);
+if ($fetchUrl !== $src) {
+    // 重定向发生过：原始 host 也该在白名单里
+    learnImgHost((int) $source['id'], strtolower((string) parse_url($src, PHP_URL_HOST)));
+}
 
 // 支柱二：把代理结果落盘。下一次 coverUrl() 就会直出 static/imgcache/...，
 // 这张图一生只产生这一次 EP。落盘失败（磁盘满/无权限）静默 ——

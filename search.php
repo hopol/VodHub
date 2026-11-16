@@ -15,7 +15,9 @@ requireAccess();
 // 日志里就能分清「被限流」和「EP 打满」。
 guardCheck('search', 20);
 
-$wd       = trim((string) ($_GET['wd'] ?? ''));
+// ★ 1.5.6：`wd` 钳到 50 字符 —— 原来无上限，超长 URL 会让上游 414、
+//   也会在缓存文件名里制造异常。50 字对片名搜索绰绰有余。
+$wd       = mb_substr(trim((string) (is_scalar($_GET['wd'] ?? null) ? $_GET['wd'] : '')), 0, 50, 'UTF-8');
 $sourceId = intval($_GET['source'] ?? 0);
 $page     = max(1, intval($_GET['page'] ?? 1));
 
@@ -30,20 +32,32 @@ if ((!$source || !$source['enabled']) && $sources) {
 
 if ($source && $wd !== '') {
     $client = new VodClient($source['api_url']);
+    // ⚠ 1.5.6：直接用上游 `wd`，其语义是**片名前缀匹配**（见 docs/api-sources.md）。
+    //   实测（vodhub.gt.tc / source=1）：
+    //     wd=理想        → 10 条（全是「理想X」开头）
+    //     wd=理想照耀     →  1 条 ✅ 理想照耀中国
+    //     wd=照耀        →  0 条（「照耀」在片名中间，前缀匹配命中不到）
+    //     wd=中国        → 105 条，但**全是「中国X」开头**，不含「理想照耀中国」
+    //   这是上游接口的语义限制（MacCMS 系 `LIKE '关键词%'`），站内无法通过换参数绕过。
+    //   真正能搜到「照耀」的方案见 docs/api-sources.md「搜索」一节的 A / B 两条。
     $data = $client->getList(0, $page, $wd);
+    $searchMsg = '';
 } else {
     $data = ['list' => [], 'pagecount' => 1, 'total' => 0, 'limit' => 20, 'page' => $page];
+    $searchMsg = '';
 }
 
 $list      = $data['list'] ?? [];
 $pagecount = max(1, intval($data['pagecount'] ?? 1));
 $total     = intval($data['total'] ?? 0);
+$searchMsg = $searchMsg ?? '';
 
 $siteTitle = setting('site_title', APP_NAME);
 $pageTitle = $wd !== '' ? '搜索：' . $wd : '搜索';
 
 renderTemplate('search', [
     'wd'        => $wd,
+    'searchMsg' => $searchMsg,
     'sources'   => $sources,
     'source'    => $source,
     'sourceId'  => $sourceId,

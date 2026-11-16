@@ -28,11 +28,6 @@ function imgCacheRelPath(string $url): string {
     return 'static/imgcache/' . imgCacheFileName($url);
 }
 
-/** 图片缓存绝对路径 */
-function imgCachePath(string $url): string {
-    return dirname(__DIR__) . '/' . imgCacheRelPath($url);
-}
-
 /**
  * 文件名 = sha1(原始URL) + 由 Content-Type 推出的扩展名。
  * 与 URL 一一对应 ⇒ 天然幂等，重复拉取覆盖同一文件。
@@ -44,7 +39,7 @@ function imgCacheFileName(string $url, string $mime = ''): string {
     $ext = $mime !== '' ? imgCacheExt($mime) : '';
     if ($ext === '') {
         // 直出路径尚不知道 mime，用 URL 里的后缀猜；猜不出就留空，
-        // 由 imgCacheHas() 按「前缀 + 任意已知扩展名」匹配。
+        // 由 imgCacheHit() 按「前缀 + 任意已知扩展名」匹配。
         $path = (string) (parse_url($url, PHP_URL_PATH) ?? '');
         $guess = strtolower((string) pathinfo($path, PATHINFO_EXTENSION));
         if (in_array($guess, imgCacheExts(), true)) {
@@ -69,7 +64,19 @@ function imgCacheExts(): array {
     return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'bmp', 'ico'];
 }
 
-/** Content-Type → 扩展名；未知类型返回 bin（无扩展名则无法被当脚本执行） */
+/**
+ * Content-Type → 扩展名。
+ *
+ * ⚠⚠ **未知类型返回 `''`（= 不落盘），1.5.6 起**：原来返回 `'bin'`，后果是——
+ *   · `imgCachePut()` 真的写出 `static/imgcache/<sha1>.bin`；
+ *   · 而 `imgCacheHit()` **只扫 8 个白名单扩展名**，永远找不到它；
+ *   · 于是这张图**每次浏览都重新出站 + 1 个 EP**，自愈能力被抵消；
+ *   · `.bin` 持续累积占磁盘，只能等 LRU 回收；
+ *   · 而 `SECURITY.md` 与测试都声称「SVG 不落盘」——**与实际不符**。
+ *
+ *   这是 1.3.4 堵 SVG 存储型 XSS 时留下的尾巴：只改了扩展名映射，
+ *   没改「谁负责拒绝落盘」。1.5.6 把语义补齐：**未知类型 = 不落盘**。
+ */
 function imgCacheExt(string $mime): string {
     $mime = strtolower(trim(explode(';', $mime)[0]));
     $map = [
@@ -81,28 +88,7 @@ function imgCacheExt(string $mime): string {
         // 'image/svg+xml' => 'svg',
         'image/x-icon' => 'ico', 'image/vnd.microsoft.icon' => 'ico',
     ];
-    return $map[$mime] ?? 'bin';
-}
-
-/**
- * 本地是否已有该图。
- *
- * 找不到精确文件名时按 sha1 前缀扫一遍（扩展名可能因 URL 里没有后缀而不同），
- * 但只认白名单扩展名，绝不返回 .bin 之外的可疑文件。
- */
-function imgCacheHas(string $url): bool {
-    $exact = imgCachePath($url);
-    if (is_file($exact)) {
-        return true;
-    }
-    $dir = dirname(__DIR__) . '/static/imgcache';
-    $prefix = sha1($url);
-    foreach (imgCacheExts() as $ext) {
-        if (is_file($dir . '/' . $prefix . '.' . $ext)) {
-            return true;
-        }
-    }
-    return false;
+    return $map[$mime] ?? '';   // 未知类型 → 不落盘（见函数头）
 }
 
 /**
@@ -133,6 +119,13 @@ function imgCacheHit(string $url): ?string {
  */
 function imgCachePut(string $url, string $body, string $mime): bool {
     if ($body === '' || !guardCaps()['writable']) {
+        return false;
+    }
+    // ★ 1.5.6：未映射类型（含 SVG、image/heic、image/jxl…）**不落盘**。
+    //   这条是「SVG 不落盘」这句话唯一真正的实现点 —— 只改扩展名映射不够，
+    //   那会让文件落到 `.bin`，反而写得进、读不出。
+    //   不落盘 ≠ 功能缺失：img.php 仍会**实时返回**这类图片的字节，只是不本地化。
+    if (imgCacheExt($mime) === '') {
         return false;
     }
     $dir = dirname(__DIR__) . '/static/imgcache';
@@ -178,7 +171,7 @@ function imgCacheMimeForPath(string $path): string {
 /** 图片缓存当前字节数（后台状态展示用） */
 function imgCacheBytes(): int {
     $n = 0;
-    foreach ((glob(dirname(__DIR__) . '/static/imgcache/*') ?: []) as $f) {
+    foreach (vhGlob(dirname(__DIR__) . '/static/imgcache/*') as $f) {
         if (is_file($f)) {
             $n += (int) @filesize($f);
         }

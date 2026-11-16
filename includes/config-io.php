@@ -38,7 +38,7 @@ const CONFIG_MAX_BYTES = 2 * 1024 * 1024;
 function cacheStats(): array {
     $files = 0;
     $bytes = 0;
-    foreach ((glob(CACHE_DIR . '/*.json') ?: []) as $f) {
+    foreach (vhGlob(CACHE_DIR . '/*.json') as $f) {
         if (is_file($f)) {
             $files++;
             $bytes += (int) filesize($f);
@@ -92,7 +92,7 @@ function opcacheInfo(): array {
     $msg = 'OPcache 已启用';
     // validate_timestamps=0 是「换文件不生效」的根因，必须点出来
     if ($timestamps === '0') {
-        $msg .= '，**且 validate_timestamps=0（永不自动重新校验）** —— 换文件后必须手动重置才会生效';
+        $msg .= '，且 validate_timestamps=0（永不自动重新校验）—— 换文件后必须手动重置才会生效';
     } else {
         $msg .= '，约 ' . ($revalidate === '' ? '0' : $revalidate) . ' 秒后自动校验新文件';
     }
@@ -157,7 +157,7 @@ function clearSystemCache(bool $api, bool $opcache,
         $n = 0;
         $neg = 0;
         $bytes = 0;
-        foreach ((glob(CACHE_DIR . '/*') ?: []) as $f) {
+        foreach (vhGlob(CACHE_DIR . '/*') as $f) {
             if (!is_file($f)) {
                 continue;
             }
@@ -315,20 +315,46 @@ function configImport(array $data, string $mode): array {
         return ['ok' => false, 'msg' => '⚠️ 配置文件里没有 settings / groups / sources 任何一段'];
     }
 
+    // ★ 1.5.6：覆盖模式**必须有 sources 段**，否则就是「清空全部数据源、一条不导入」。
+    //
+    //   原来校验只拦「三段全空」，于是只含 `settings` 的 JSON（或手工截断的文件）
+    //   配 `mode=replace` → 执行 `DELETE FROM sources/groups`、**一条都不导入**，
+    //   站点前台瞬间空空如也。唯一的保护是前端 `confirm()`（JS），关掉 JS 或误点就没了。
+    //
+    //   这是「破坏性操作必须有服务端二次确认」：前端 confirm 不算确认。
+    if ($mode === 'replace' && !$sources) {
+        return ['ok' => false,
+                'msg' => '⚠️ 覆盖模式需要 `sources` 段：文件里没有数据源，'
+                       . '继续会清空现有全部分组与数据源。请改用「合并」，'
+                       . '或导出一份含 sources 的完整配置再导入。'];
+    }
+
     // 密钥单独摘出来：只有文件本身带了才覆盖，避免导入普通备份时把后台密码冲掉
     $secrets = [];
+    $badSecrets = [];
     foreach (CONFIG_SECRET_KEYS as $k) {
-        if (array_key_exists($k, $settings)) {
-            $secrets[$k] = (string) $settings[$k];
-            unset($settings[$k]);
+        if (!array_key_exists($k, $settings)) {
+            continue;
         }
+        $v = (string) $settings[$k];
+        unset($settings[$k]);
+        // ★ 1.5.6：**只收密码哈希形态**，明文/损坏的一律拒收。
+        //
+        //   `admin_password` / `access_password` 若是明文或截断的哈希，
+        //   导入后 `password_verify()` 永远失败 → **站长被锁在后台之外**。
+        //   认 bcrypt（`$2y$`/`$2a$`/`$2b$`/`$2x$`）与 argon2（`$argon2id$`/`$argon2i$`）。
+        if ($v !== '' && !preg_match('/^\$(2[abyx]|argon2id|argon2i)\$/', $v)) {
+            $badSecrets[] = $k;
+            continue;
+        }
+        $secrets[$k] = $v;
     }
 
     // ⚠ 批量写入 → 期间的所有 pcClear() 只登记意图，退出时统一清一次。
     //   pcClear() 自 1.3.11 起收口到数据层（db.php 的 addSource / updateSource…），
     //   于是一次「覆盖导入」会触发几十次全量作废 —— 而中间态没有任何访客会看到。
     //   实测 60 个文件单次 5.9 ms × 50 ≈ 295 ms，共享 CPU 上还要翻倍。
-    return pcClearBatch(static function () use ($data, $mode, $settings, $groups, $sources, $secrets): array {
+    return pcClearBatch(static function () use ($data, $mode, $settings, $groups, $sources, $secrets, $badSecrets): array {
     $pdo = db();
     $pdo->beginTransaction();
     try {
@@ -460,6 +486,12 @@ function configImport(array $data, string $mode): array {
     );
     if (!$secrets) {
         $msg .= '；文件未含密钥，后台密码与访问密码保持不变';
+    }
+    if (!empty($badSecrets)) {
+        // ⚠ 不用 Markdown 的 `**` —— 这条消息经 admin.php 的 h() 转义后会**原样显示星号**
+        //   （第 28 条清的就是这类，这里是 1.5.6 新增时自己又犯了一次）。
+        $msg .= '；⚠️ 下列密钥不是合法哈希，已<b>拒绝导入</b>（避免把你锁在后台外）：'
+               . implode('、', $badSecrets);
     }
     return ['ok' => true, 'msg' => $msg];
     });   // ← pcClearBatch 闭合：到这里才真正作废 c/

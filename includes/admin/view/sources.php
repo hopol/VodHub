@@ -79,7 +79,7 @@
                                     <input type="hidden" name="csrf" value="<?= csrfToken() ?>">
                                     <button class="btn <?= $s['enabled'] ? 'btn-danger' : 'btn-primary' ?> btn-xs"
                                             type="submit"
-                                            onclick="return confirm('确定<?= $s['enabled'] ? '关闭' : '启用' ?>「<?= h($s['name']) ?>」吗？')">
+                                            onclick="return confirm(<?= json_encode('确定' . ($s['enabled'] ? '关闭' : '启用') . '「' . (string) $s['name'] . '」吗？', JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?>)">
                                         <?= $s['enabled'] ? '关闭' : '启用' ?>
                                     </button>
                                 </form>
@@ -93,7 +93,7 @@
                                 <a class="btn btn-ghost btn-xs"
                                    href="admin.php?edit=<?= intval($s['id']) ?>">编辑</a>
                                 <form method="post" action="admin.php"
-                                      onsubmit="return confirm('确定删除「<?= h($s['name']) ?>」吗？')">
+                                      onsubmit="return confirm(<?= json_encode('确定删除「' . (string) $s['name'] . '」吗？', JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?>)">
                                     <input type="hidden" name="action" value="delete_source">
                                     <input type="hidden" name="id" value="<?= intval($s['id']) ?>">
                                     <input type="hidden" name="csrf" value="<?= csrfToken() ?>">

@@ -11,7 +11,8 @@
  * 带文件缓存。上游请求失败时自动降级使用旧缓存，保证站点不白屏。
  *
  * 极致低功耗模式 · 支柱四（访客路径零阻塞）在这个类里落了四件事：
- *   1. 超时从 12 s 降到 4 s（从未有数据时的完整拉取），连接 6 s → 2.5 s
+ *   1. 超时从 12 s 降到 **2 s**（从未有数据时的完整拉取），连接 3 s
+ *      （⚠ 1.5.6 更正：文件头原写「4 s / 连接 2.5 s」，代码里早已是 2 s / 3 s）
  *   2. 失败写 60 s 负缓存 —— 失败期间**完全不出站**，
  *      消灭「上游一挂，每次点击白等 12 秒」这个故障放大器
  *   3. 有过期数据时**有界刷新**：1 秒内能成就用新的，不成就用旧的
@@ -86,6 +87,10 @@ class VodClient {
      * 把整页最坏耗时锁在 PAGE_DEADLINE_BUDGET 内。
      */
     private static float $pageStart = 0.0;
+
+    /** 首页残页判定用的计数（1.5.6，见 getTypesLocal()） */
+    public static int $totalTypeSources = 0;
+    public static int $emptyTypeSources = 0;
     /** 整页出站预算（秒）。默认 2.5s，稳压在 OpenResty ~3s 网关内 */
     private const PAGE_DEADLINE_BUDGET = 2.5;
 
@@ -138,11 +143,25 @@ class VodClient {
      *   补拉成功后回到上面的只读路径；上游不通时由 60 秒负缓存兜住，
      *   不会每次访问都重复出站。
      */
-    public function getTypesLocal(): array {
+    /**
+     * @param bool $lastOfPage 本页是否已处理到**最后一个**数据源。
+     *
+     * ★ 1.5.6：残页判定从「一个源没分类就标残页」改成「**全部源都没分类才标**」。
+     *   原判据装在错的一侧：15 个源里只要有 1 个上游长期不可用（或某个源 API
+     *   真的不返回 `class`），`if (!$types)` 就 `pcVolatile()`，**整页**不写静态缓存。
+     *   于是首页 —— 全站访问量最大、也是「0 EP 直出」最该命中的页面 ——
+     *   反而成了唯一稳定回源的页面。
+     *
+     *   真正的问题是：**残页标记是整页级的，但「分类不全」是源级的**。
+     */
+    public function getTypesLocal(bool $lastOfPage = false): array {
         $types = $this->sortTypes($this->request(['ac' => 'list'], true)['class'] ?? []);
         if (!$types) {
-            // 这一页是残页（本地没缓存 + 上游没给）：标记为**不可静态化**。
-            // 否则小时桶会把空白首页冻住整整一小时，缓存补上也得等整点才生效。
+            self::$emptyTypeSources++;
+        }
+        if ($lastOfPage && self::$emptyTypeSources > 0 && self::$totalTypeSources > 0
+            && self::$emptyTypeSources >= self::$totalTypeSources) {
+            // 全部源都没分类 → 整页确实是残页（连「浏览全部 →」都不渲染）
             if (function_exists('pcVolatile')) {
                 pcVolatile();
             }
@@ -239,7 +258,7 @@ class VodClient {
             return;
         }
         $prefix = md5($this->baseUrl) . '_';
-        foreach ((glob(CACHE_DIR . '/*') ?: []) as $file) {
+        foreach ((function_exists('vhGlob') ? vhGlob(CACHE_DIR . '/*') : (glob(CACHE_DIR . '/*') ?: [])) as $file) {
             $base = basename($file);
             if (!str_starts_with($base, $prefix)) {
                 continue;
@@ -350,7 +369,8 @@ class VodClient {
         //     起表时机 = 本次请求里第一个「本地没数据、准备出站」的源；
         //     用满就不再出站 —— 拉不完的交给下一次请求继续，已成功的分类都已落盘、
         //     进度不会丢；本页会被标成残页、不写静态缓存（下一次访问重新渲染）。
-        //     最坏耗时 ≈ 预算 + 一次超时 = 6 + 4 = 10 秒，稳稳落在网关超时之内
+        //     ⚠ 1.5.6 更正数学：单源超时是 2 s，预算受 PAGE_DEADLINE_BUDGET（2.5 s）钳制，
+        //     实际最坏 ≈ 2.5 + 2 = 4.5 秒，不是「6 + 4 = 10 秒」（原注释是超时改 2s 之前写的）
         //     （没有这一条：N × 4 秒，15 个源 60 秒 → 必然 502）。
         //
         // ⚠️ 1.3.3 修复：预算用满时**必须写负缓存**，否则每次访问都会从头再来 ——
@@ -365,9 +385,22 @@ class VodClient {
                 self::$warmStart = microtime(true);
                 // 起表才读一次配置（此时 setting() 必可用——页面入口都已加载 db.php）
                 if (function_exists('setting')) {
-                    $this->warmBudget = (float) setting('warm_budget', (string) self::WARM_BUDGET_DEFAULT);
+                    // ⚠⚠ **warm_budget 的实际上限是 PAGE_DEADLINE_BUDGET（1.5.6 修）**：
+                    //   request() 的判定顺序是「③″ 整页墙钟（2.5s）→ ④′ 补拉预算」，
+                    //   页面预算先到点就把所有后续出站判死。所以后台那个「推荐 6 秒」
+                    //   和 8/10 秒选项**在任何主机上都不会生效** ——
+                    //   这是「两把尺子」的又一例：后来加的常量把先前那个悄悄覆盖了。
+                    //   现在钳制 + 在 UI 上说明（见 maintenance.php）。
+                    $cfg = (float) setting('warm_budget', (string) self::WARM_BUDGET_DEFAULT);
+                    $this->warmBudget = max(0.0, min($cfg, self::PAGE_DEADLINE_BUDGET));
                 }
-            } elseif ((microtime(true) - self::$warmStart) >= $this->warmBudget) {
+            }
+            // ⚠⚠ **起表后立即判预算（1.5.6 修）**：
+            //   原写法 `if (起表) {...} elseif (elapsed >= budget) {...}` ——
+            //   第一个未命中缓存的源走的是 `if` 分支，**不检查预算**。
+            //   于是后台设 `warm_budget = 0（不自动补拉）` 时，
+            //   **每次请求仍会拉一个源**（最多 2s），文案与实际行为不符。
+            if ((microtime(true) - self::$warmStart) >= $this->warmBudget) {
                 $this->markNegative($cacheFile);   // ★ 关键：别让下次请求再撞一次超时
                 return $this->emptyResult($params,
                     '本页分类补拉已达时间预算，剩余的源下次访问会继续补上');
@@ -404,22 +437,6 @@ class VodClient {
             return $cached;
         }
         return $this->emptyResult($params, '接口请求失败：' . $err);
-    }
-
-    /**
-     * 后台可调的补拉预算（秒）。
-     *
-     * 写死 6 秒的问题：免费空间网关超时从 3 秒到 30 秒都有，
-     * 3 秒超时的主机上 6 秒预算照样撞 502。所以暴露成可配置项。
-     *
-     * @param float|null $sec 为 null 时读当前值；否则设值并返回自身（链式）
-     */
-    public function warmBudget(?float $sec = null) {
-        if ($sec === null) {
-            return $this->warmBudget;
-        }
-        $this->warmBudget = max(0.0, (float) $sec);
-        return $this;
     }
 
     /** 请求失败时的统一空结构（字段与原实现一致，模板可直接消费） */
@@ -471,7 +488,19 @@ class VodClient {
      * @param int $timeout 超时秒数。默认取 $this->timeout（无缓存 2 s / 有旧数据 1 s）；
      *                     过期数据的有界刷新传 1 s。
      */
-    private function httpGet(string $url, int &$httpCode = 0, string &$err = '', int $timeout = 0, int $remainMs = 0): string {
+    /**
+     * @param int $remainMs 整页墙钟剩余毫秒。
+     *   **-1（默认）= 不限**：probe() 这类「单点探测」不参与整页预算。
+     *   **0 = 到点了**，直接不出站。
+     *   **>0 = 把本次出站超时压到剩余秒数**。
+     *
+     * ⚠⚠ **默认值从 0 改成 -1 是 1.5.6 修的一个真 bug**：原来默认 0，
+     *   而函数体第一屏写死「<=0 → 不出站」，于是 `probe()` 调用时没传这个参数，
+     *   **后台「测试连接」对每个源都返回「请求失败：页面出站预算已用完」，
+     *   延迟恒 0.0 秒，一个网络都没发出去**。这是 2026-09-30 加整页预算时
+     *   留下的隐式契约（调用方必须记得传）——本项目的教训一贯是**不能靠调用方记得**。
+     */
+    private function httpGet(string $url, int &$httpCode = 0, string &$err = '', int $timeout = 0, int $remainMs = -1): string {
         $err = '';
         if (!function_exists('curl_init')) {
             $err = '服务器未安装 curl 扩展';
@@ -480,19 +509,22 @@ class VodClient {
         if ($timeout <= 0) {
             $timeout = $this->timeout;
         }
-        // 整页墙钟剩余（ms）：<=0 = 到点了，不再为新数据出站（调用方走 ⑤ 兜底）
-        if ($remainMs <= 0) {
+        // 整页墙钟剩余（ms）：0 = 到点了，不再为新数据出站（调用方走 ⑤ 兜底）
+        if ($remainMs === 0) {
             $err = '页面出站预算已用完';
             return '';
         }
-        // >0 时把本次出站超时压到 min(原超时, 剩余秒数)：第三个源剩 0.5s 时不再傻等 2s
-        $timeout = min($timeout, max(1, (int) ceil($remainMs / 1000)));
+        if ($remainMs > 0) {
+            // >0 时把本次出站超时压到 min(原超时, 剩余秒数)：第三个源剩 0.5s 时不再傻等 2s
+            $timeout = min($timeout, max(1, (int) ceil($remainMs / 1000)));
+        }
         $ch = curl_init();
         curl_setopt_array($ch, [
             CURLOPT_URL            => $url,
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT        => $timeout,
-            CURLOPT_CONNECTTIMEOUT => 3,
+            // 连接超时必须 ≤ 总超时（原来是 3，比总超时 2 还长，语义上没意义）
+            CURLOPT_CONNECTTIMEOUT => min(2, $timeout),
             CURLOPT_FOLLOWLOCATION => true,
             CURLOPT_MAXREDIRS      => 3,
             CURLOPT_USERAGENT      => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
@@ -502,6 +534,8 @@ class VodClient {
             CURLOPT_SSL_VERIFYPEER => TLS_VERIFY,
             CURLOPT_SSL_VERIFYHOST => TLS_VERIFY ? 2 : 0,
             CURLOPT_HTTPHEADER     => ['Accept: application/json'],
+            // 允许上游压缩返回，curl 自动解压（省带宽也省上游等待）
+            CURLOPT_ENCODING       => '',
         ]);
         $body = curl_exec($ch);
         $httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -510,6 +544,11 @@ class VodClient {
             $body = '';
         }
         curl_close($ch);
+        if ($httpCode !== 200 && $err === '') {
+            // ★ 1.5.6：非 200 时 `$err` 保持空，于是报错信息是「接口请求失败：」
+            //   （冒号后面什么都没有）。补一句 HTTP 状态，排查效率立刻不同。
+            $err = $httpCode === 0 ? '未收到 HTTP 响应' : 'HTTP ' . $httpCode;
+        }
         return $httpCode === 200 ? (string) $body : '';
     }
 }

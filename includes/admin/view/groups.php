@@ -49,7 +49,7 @@
                                 <a class="btn btn-ghost btn-xs"
                                    href="admin.php?editgroup=<?= intval($g['id']) ?>#tab-group">改名</a>
                                 <form method="post" action="admin.php"
-                                      onsubmit="return confirm('删除分组「<?= h($g['name']) ?>」？组内数据源会归入未分组。')">
+                                      onsubmit="return confirm(<?= json_encode('删除分组「' . (string) $g['name'] . '」？组内数据源会归入未分组。', JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?>)">
                                     <input type="hidden" name="action" value="delete_group">
                                     <input type="hidden" name="id" value="<?= intval($g['id']) ?>">
                                     <input type="hidden" name="csrf" value="<?= csrfToken() ?>">

@@ -1012,15 +1012,34 @@ t('总量闸绝不删本小时的桶（那些页面正被 .htaccess 直出）', 
     $gc   = t_contract_code((string) file_get_contents($root . '/includes/guard.php'));
     $body = t_contract_body($gc, 'guardGcPageBuckets');
     ok($body !== null, '应能找到 guardGcPageBuckets()');
+
+    // ⚠⚠ **判据在 1.5.6 改过（从「单时区」升级到「全部候选桶」）**：
+    //
+    //   原判据只认 `basename($bucket) === $thisHour`（**PHP 的时区**），
+    //   而 `pcBuckets()` 会按 Apache 报的桶名写入（可能是 UTC 命名）。
+    //   于是那 4~5 个桶里**只有 1 个受保护**，其余包括
+    //   **正在被 Apache 直出的那个**都不在保护范围内 ——
+    //   磁盘吃紧时 GC 按 mtime 删桶，删掉的正是在服务的那份 →
+    //   后续请求全部回源重渲染，形成「越忙越删、越删越忙」的自激。
+    //
+    //   也就是说**原判据守的是一个比注释承诺更窄的东西** ——
+    //   又一条「说的和做的不一致」。1.5.6 把判据升级成：
+    //   保护范围必须来自 `pcBuckets()`（全部候选），且规范桶无论如何都在内。
+    //
+    //   本条断言因此盯的是「保护集合来自 pcBuckets() + 用它做跳过条件」，
+    //   而不是某个具体变量名（变量名可以变，覆盖面不能缩水）。
     ok(
-        preg_match('/\$thisHour\s*=/', (string) $body) && str_contains((string) $body, '$thisHour'),
-        '总量闸必须显式排除本小时桶 —— 删掉它等于把访客正在看的页面变成回源渲染，'
-        . '那是 502 级事故而不是性能问题'
+        str_contains((string) $body, 'pcBuckets()'),
+        '保护范围必须来自 pcBuckets()（全部候选桶）—— 只保护 PHP 时区那个会误删正在服务的桶'
     );
-    // 本小时桶必须出现在「跳过」分支里，而不是只被赋值一次就没人用
     ok(
-        preg_match('/basename\(\$bucket\)\s*===\s*\$thisHour/', (string) $body),
-        '应能看到「桶名 === 本小时 → continue」这个跳过条件'
+        preg_match('/isset\(\$protect\[basename\(\$bucket\)\]\)/', (string) $body),
+        '应能看到「桶名在保护集合里 → continue」这个跳过条件'
+    );
+    // 规范桶必须无条件在保护集合里（即使 pcBuckets() 拿不到）
+    ok(
+        preg_match('/\$protect\[date\(\'Ymd-H\'\)\]\s*=\s*true/', (string) $body),
+        '规范桶（PHP 时区）必须无条件加进保护集合'
     );
 });
 
@@ -1557,16 +1576,34 @@ t('没有定义了却没人调用的函数（1.5.1 起加了这条）', static f
     // 判据是**扫出来的**（遍历全仓库的函数声明，再逐个找调用点），
     // 不是列出来的 —— 否则新增第 3 个死函数时不会被检查，测试照样全绿。
     $skip = [
+        // 构造函数由 `new X()` 隐式调用，源码里没有 `__construct(` 字面调用点
+        '__construct',
         // adminAction* 由 dispatcher 动态派发（admin.php 里拼函数名后 call），
         // 源码里找不到字面调用点，是误报而非死代码。
         'adminActionAddSource', 'adminActionUpdateSource', 'adminActionDeleteSource',
         'adminActionTestSource', 'adminActionAccessSettings', 'adminActionChangeAdminPassword',
         'adminActionSiteSettings', 'adminActionAddGroup', 'adminActionUpdateGroup',
         'adminActionDeleteGroup', 'adminActionDetectImgHost', 'adminActionToggleSource',
-        'adminActionSiteTemplate', 'adminActionResetTemplate', 'adminActionClearCache',
+        'adminActionSiteTemplate', 'adminActionEditTemplate', 'adminActionResetTemplate', 'adminActionClearCache',
         'adminActionImportConfig',
     ];
+    // ⚠⚠ **1.5.6：扫描必须先剔掉注释，且要覆盖类方法**（两条都是本条判据的实际漏洞）：
+    //
+    //   ① **注释里的提及被算成调用点**。原实现直接拿 `file_get_contents()` 拼成一份
+    //      `$all` 再数出现次数 —— 注释也算。于是 `imgCacheHas()` 全项目零调用，
+    //      却因为 `includes/imgcache.php:47` 注释里那句「由 imgCacheHas() 按…匹配」
+    //      而凑够 2 次，**契约 12 静默放行**。删掉那行注释它才变红。
+    //      **它守的是注释，不是调用。**
+    //
+    //   ② **类方法根本不进扫描范围**。正则 `^\s*function\s+(\w+)` 要求行首是
+    //      `function`，而方法是 `public function` / `private function`，匹配不上。
+    //      于是 `VodClient::warmBudget()` 零调用点，却从未被本条发现。
+    //
+    //   现在用 `token_get_all()` 剥掉 T_COMMENT / T_DOC_COMMENT / 字符串字面量，
+    //   再按 T_FUNCTION 提取名字（含方法）。
     $names = $skip;
+    $all   = '';
+    $files = [];
     $it = new RecursiveIteratorIterator(
         new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS)
     );
@@ -1575,34 +1612,65 @@ t('没有定义了却没人调用的函数（1.5.1 起加了这条）', static f
         if (!preg_match('/\.php$/', $p) || str_contains($p, '/tests/')) {
             continue;
         }
-        if (preg_match_all('/^\s*function\s+(\w+)\s*\(/m', (string) file_get_contents($p), $m)) {
-            foreach ($m[1] as $fn) {
-                $names[] = $fn;
-            }
-        }
-    }
-    // 所有非测试代码拼成一份，统计每个函数名的出现次数
-    $all   = '';
-    $files = [];
-    foreach (new RecursiveIteratorIterator(
-        new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS)
-    ) as $f) {
-        $p = (string) $f;
-        if (!preg_match('/\.php$/', $p) || str_contains($p, '/tests/')) {
-            continue;
-        }
         $files[] = $p;
     }
     foreach ($files as $p) {
-        $all .= (string) file_get_contents($p);
+        $src    = (string) file_get_contents($p);
+        $tokens = @token_get_all($src);
+        if (!is_array($tokens) || $tokens === []) {
+            continue;
+        }
+        // 提取函数/方法名：T_FUNCTION 之后的第一个 T_STRING
+        // 同时记录「它是不是类方法」—— 方法的调用点是 `->name(` / `self::name(`，
+        // 与自由函数的 `name(` 形态不同，统计时要分别处理。
+        for ($i = 0, $n = count($tokens); $i < $n; $i++) {
+            $t = $tokens[$i];
+            if (is_array($t) && $t[0] === T_FUNCTION) {
+                for ($j = $i + 1; $j < $n; $j++) {
+                    $x = $tokens[$j];
+                    if (is_array($x) && $x[0] === T_STRING) {
+                        $names[] = $x[1];
+                        break;
+                    }
+                    if (is_string($x) && $x === '(') {
+                        break;   // 闭包（function (）{...}）没有名字
+                    }
+                }
+            }
+        }
+        // 重建「无注释、无字符串」的代码，供统计调用点
+        $clean = '';
+        foreach ($tokens as $t) {
+            if (is_array($t)) {
+                if ($t[0] === T_COMMENT || $t[0] === T_DOC_COMMENT || $t[0] === T_INLINE_HTML) {
+                    continue;
+                }
+                if ($t[0] === T_CONSTANT_ENCAPSED_STRING || $t[0] === T_ENCAPSED_AND_WHITESPACE) {
+                    continue;
+                }
+                $clean .= $t[1];
+            } else {
+                $clean .= $t;
+            }
+        }
+        $all .= "\n" . $clean;
     }
     $dead = [];
     foreach (array_unique($names) as $fn) {
         if (in_array($fn, $skip, true)) {
             continue;
         }
-        // 「定义处」也是一次出现，所以出现 1 次 = 只有定义、没有调用
-        if (preg_match_all('/(?<![\w$>:])' . preg_quote($fn, '/') . '\s*\(/', $all) <= 1) {
+        // 「定义处」也是一次出现，所以出现 1 次 = 只有定义、没有调用。
+        //
+        // ⚠ **方法调用点是 `->name(` 或 `self::name(`**，而自由函数是 `name(`。
+        //   原正则的负向后顾 `(?<![\w$>:])` 把 `->` 与 `::` 都排除了，
+        //   于是**方法全被判成死函数**（`getTypes()` / `pageBudgetStart()` …）。
+        //   1.5.6 让方法名允许前面是 `->` 或 `::`，自由函数仍然禁止前面是
+        //   标识符字符（避免 `myname()` 匹配到 `xxxmyname()`）。
+        $patMethod = '/(?:->|::)\s*' . preg_quote($fn, '/') . '\s*\(/';
+        $patFunc   = '/(?<![\w$>:])'   . preg_quote($fn, '/') . '\s*\(/';
+        $n = preg_match_all($patMethod, $all) + preg_match_all($patFunc, $all);
+        if ($n <= 1) {
             $dead[] = $fn;
         }
     }

@@ -108,7 +108,12 @@ templates/
 | `partials/vod_side.php` | 播放页侧栏 | ❌ 回退 default |
 
 **只有当你要改的页面与 default 不同时，才需要自带副本。**
-现有 5 套模板里只有 `bilibili` 有两个：`list.php` 与 `partials/vod_grid.php`。
+现有 5 套模板里只有 `bilibili` 有一个：`partials/vod_grid.php`（角标策略不同）。
+
+> ⚠ **1.5.6 删掉了 `templates/bilibili/list.php`**：它与 `default/list.php`
+> 只差换行与缩进（渲染结果逐字节相同），属于**语义重复**。
+> CI 的反查只认「逐字节相同」，于是它一直绕过 —— 那条判据守不住「内容相同、
+> 只是格式不同」的重复。1.5.6 把反查升级成「忽略空白后相同」。
 
 > CI 还有一条**反向检查**：非 default 模板里若出现与 default **逐字节相同**的
 > `.php` 文件，会直接判失败 —— 那正是这次要消灭的重复。

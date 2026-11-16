@@ -267,9 +267,17 @@ $injections = [
         //   会如实报「该测试文件未产生任何结果」，退出码非 0，判定照样成立。
         'name'  => '把模板的 tplInclude 改回 __DIR__ 硬路径（复现去重时的整页 500）',
         'apply' => null,
-        'file'  => 'templates/bilibili/list.php',
-        'find'  => "require tplInclude('footer.php', \$tplName);",
-        'repl'  => "require_once __DIR__ . '/footer.php';",
+        // ⚠ **1.5.6 改了宿主文件**：原来注入 `templates/bilibili/list.php`，
+        //   但它与 `default/list.php` 只差空白、属语义重复，1.5.6 已删除
+        //   （见 CI 反查升级的那段）。宿主没了，这条注入就「验证 12 条、应 13 条」。
+        //
+        //   守的东西没变：`tplInclude()` 只返回路径、`require` 必须留在页面文件里写 ——
+        //   一旦写成 `__DIR__ . '/footer.php'` 这种硬路径，模板去重后
+        //   该文件被删，页面就 `Failed opening required` 整页 500。
+        //   现在注入到 default 模板的同名文件上，语义完全等价。
+        'file'  => 'templates/default/list.php',
+        'find'  => "<?php require tplInclude('footer.php', \$tplName); ?>",
+        'repl'  => "<?php require_once __DIR__ . '/footer.php'; ?>",
     ],
     [
         // ⚠ 1.3.12 最危险的一处改动：

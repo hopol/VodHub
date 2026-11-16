@@ -116,8 +116,14 @@ jobs:
             fi
           done
 
-          # 反向检查：非 default 模板里不该再有与 default 逐字节相同的文件
+          # 反向检查：非 default 模板里不该再有与 default **内容相同**的文件
           # —— 那正是这次去重要消灭的重复；出现说明有人复制过去了。
+          #
+          # ⚠⚠ **1.5.6 升级判据：`cmp -s`（逐字节）→ `diff -w`（忽略空白）**
+          #   原判据只认「逐字节相同」，于是 `templates/bilibili/list.php` 绕过 ——
+          #   它与 default 只差换行与缩进，渲染结果完全一样，属于**语义重复**，
+          #   却因为格式不同而一直活在仓库里（文档还在给这个不存在的差异背书）。
+          #   「内容相同」才是要去重的，「格式相同」不是。
           echo ""
           dup=0
           for dir in templates/*/; do
@@ -125,13 +131,13 @@ jobs:
             [ "$tpl" = "default" ] && continue
             while IFS= read -r f; do
               rel="${f#./}"
-              if [ -f "templates/default/$rel" ] && cmp -s "templates/default/$rel" "$rel"; then
-                echo "::error::模板 $tpl 里的 $rel 与 default 完全相同 —— 应删除并回退 default"
+              if [ -f "templates/default/$rel" ] && diff -wq "templates/default/$rel" "$rel" >/dev/null 2>&1; then
+                echo "::error::模板 $tpl 里的 $rel 与 default 内容相同（忽略空白）—— 应删除并回退 default"
                 dup=1
               fi
             done < <(find "$dir" -type f -name '*.php')
           done
-          [ "$dup" -eq 0 ] && echo "✅ 没有与 default 逐字节相同的模板文件"
+          [ "$dup" -eq 0 ] && echo "✅ 没有与 default 内容相同的模板文件（忽略空白比对）"
           exit $((fail + dup))
 
       - name: 行为测试（零依赖断言）
@@ -190,10 +196,24 @@ jobs:
         run: |
           set -euo pipefail
           # README 中的相对链接指向的文件必须存在（锚点与外链不检查）
+          #
+          # ⚠⚠ **1.5.6 修：原写法是「假护栏」**：
+          #   `... | while read ...; do fail=1; done` 里的 `while` 在管道末尾 → **子 shell**，
+          #   `fail=1` 写在子 shell 里，循环结束后也没有 `exit $fail`。
+          #   于是删掉 README 里任一个链接目标，这一步照样打 ✅ —— 它从来没拦住过任何东西。
+          #
+          #   改用进程替换（`< <(...)`）保持变量作用域（与同文件 lint 步骤一致），
+          #   并在末尾显式 `exit $fail`。
           fail=0
-          grep -oE '\]\([^)#]+\)' README.md | sed 's/](\(.*\))/\1/' \
-            | grep -vE '^(https?:|mailto:)' | sort -u \
-            | while read -r link; do
-                [ -e "$link" ] || { echo "❌ README 链接失效: $link"; fail=1; }
-              done
+          while IFS= read -r link; do
+            if [ ! -e "$link" ]; then
+              echo "❌ README 链接失效: $link"
+              fail=1
+            fi
+          done < <(grep -oE '\]\([^)#]+\)' README.md | sed 's/](\(.*\))/\1/' \
+                  | grep -vE '^(https?:|mailto:)' | sort -u)
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::README 有失效链接"
+            exit 1
+          fi
           echo "✅ README 相对链接检查完成"

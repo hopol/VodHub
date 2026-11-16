@@ -59,6 +59,42 @@ const GUARD_GB = 1073741824;
 /** 两次 GC 之间的最小间隔（秒） */
 const GUARD_GC_INTERVAL = 300;
 
+/**
+ * `glob()` 的安全包装（1.5.6）。
+ *
+ * ⚠ `glob` 也可能被 `disable_functions` 禁用 —— 本文件的 guardGcPageBuckets()
+ *   早就写了 `function_exists('glob')` 兜底，但另外 7 处调用点没有：
+ *   `pcClearNow()`（任意设置保存都会走到）、`cacheStats()` / `clearSystemCache()`
+ *   （后台维护页）、`listTemplates()`、`imgCacheBytes()`、`client.clearCache()`。
+ *   这些一旦在禁用 glob 的主机上运行，表现是**后台保存设置 500**、
+ *   或维护页整段截断（正是 admin.php 那个 shutdown 提示担心的形态）。
+ *
+ *   本项目的纪律一贯是「函数被禁用不该有把整站打死的权限」
+ *   （见 vhGetEnv() / guardDisk()），这里把同一套纪律补到目录扫描上。
+ *
+ * @return string[] 拿不到 glob 时返回空数组（调用方据此跳过，而不是 fatal）
+ */
+function vhGlob(string $pattern, int $flags = 0): array {
+    if (!function_exists('glob')) {
+        return [];
+    }
+    $r = $flags ? @glob($pattern, $flags) : @glob($pattern);
+    return is_array($r) ? $r : [];
+}
+
+/**
+ * `scandir()` 的安全包装（1.5.6，理由同 vhGlob）。
+ *
+ * @return string[] 拿不到 scandir 时返回空数组
+ */
+function vhScandir(string $dir): array {
+    if (!function_exists('scandir')) {
+        return [];
+    }
+    $r = @scandir($dir);
+    return is_array($r) ? $r : [];
+}
+
 /** 磁盘水位红线（百分比）：低于此值停止写入页面缓存与图片缓存 */
 const GUARD_REDLINE = 8;
 
@@ -207,7 +243,10 @@ function guardCaps(): array {
     $caps['sess_days']   = 1;
     $caps['bucket_hours'] = 2;   // 页面静态桶保留 2 小时
 
-    // base = 由容量档位决定的**预算档**（紧凑 132 MB / 标准 387 MB）
+    // base = 由容量档位决定的**预算档**（紧凑 105 MB / 标准 340 MB）
+    // ⚠ 1.5.6 更正：原写「紧凑 132 MB / 标准 387 MB」是更早版本的预算，
+    //   1.5.0 已按 guardCaps() 实际基数重算为 105 / 340（docs/lowpower.md 与后台都对齐了），
+    //   唯独这行注释没跟上 —— 又一处「人算的合计数字」漂移。
     // tier = 由**水位**决定的缩放档（normal 不缩放 / tight ×0.6 / compact ×0.5 / protect 停写）
     // 两者是不同维度：探测不到水位时 tier=normal（不缩放），但 base 仍是紧凑档 ——
     // 后台必须分开显示，否则会出现「档位 normal 却是 15 MB 上限」这种自相矛盾。
@@ -334,8 +373,14 @@ function guardGcFiles(string $dir, int $maxFiles, int $maxBytes): void {
     }
     $files = [];
     $total = 0;
-    foreach ((glob($dir . '/*') ?: []) as $f) {
+    foreach (vhGlob($dir . '/*') as $f) {
         if (!is_file($f)) {
+            continue;
+        }
+        // ★ 1.5.6：`index.html` 是挡目录列表的（vhGuardIndex 放的），**不参与 LRU**。
+        //   它是目录里最老、最小的文件，按 mtime 删时优先级最高 —— 一旦被删，
+        //   主机开了 Options Indexes 就能列出缓存内容（与「不依赖 .htaccess」的设计不符）。
+        if (basename($f) === 'index.html') {
             continue;
         }
         $size = (int) @filesize($f);
@@ -384,14 +429,14 @@ function guardGcPageBuckets(int $hours, int $maxFiles, int $maxBytes, int $maxTo
         return;
     }
     $cutoff = time() - $hours * 3600;
-    foreach ((glob($dir . '/*', GLOB_ONLYDIR) ?: []) as $bucket) {
+    foreach (vhGlob($dir . '/*', GLOB_ONLYDIR) as $bucket) {
         $mtime = (int) @filemtime($bucket);
         if ($mtime > 0 && $mtime < $cutoff) {
             guardRmDir($bucket);
         }
     }
     // 每个桶内的文件各自限量（这一层一直是对的）
-    foreach ((glob($dir . '/*', GLOB_ONLYDIR) ?: []) as $bucket) {
+    foreach (vhGlob($dir . '/*', GLOB_ONLYDIR) as $bucket) {
         guardGcFiles($bucket, $maxFiles, $maxBytes);
     }
 
@@ -419,15 +464,36 @@ function guardGcPageBuckets(int $hours, int $maxFiles, int $maxBytes, int $maxTo
     if ($maxTotalBytes <= 0) {
         return;
     }
-    $thisHour = date('Ymd-H');
+    // ⚠⚠ **保护范围必须是「所有候选桶」，不只是 PHP 时区那个（1.5.6 修）**。
+    //
+    //   原写法只认 `basename($bucket) === date('Ymd-H')`（**PHP 的时区**），
+    //   而 `pcBuckets()` 会按 Apache 报的桶名写入（可能是 UTC 命名）。
+    //   于是那 4~5 个桶里**只有 1 个受保护**，其余包括
+    //   **正在被 Apache 直出的那个**都不在保护范围内 ——
+    //   磁盘吃紧时 GC 按 mtime 删桶，删掉的正是在服务的那份，
+    //   后续请求全部回源重渲染，形成「越忙越删、越删越忙」的自激。
+    //
+    //   注释里一直写着「正在被直出的页面绝不能动」，**判据却只看了一个时区** ——
+    //   又一条「说的和做的不一致」。现在直接保护 pcBuckets() 的全部候选。
+    //
+    //   ⚠ `pcBuckets()` 在 pagecache.php，本文件不能顶层 require 它（会成环），
+    //     所以用 function_exists 兜底 + 拿不到就退回旧的单时区判据。
+    $protect = [];
+    if (function_exists('pcBuckets')) {
+        foreach (pcBuckets() as $b) {
+            $protect[$b] = true;
+        }
+    }
+    $protect[date('Ymd-H')] = true;   // 规范桶无论如何都保护
+
     $buckets = [];
-    foreach ((glob($dir . '/*', GLOB_ONLYDIR) ?: []) as $bucket) {
+    foreach (vhGlob($dir . '/*', GLOB_ONLYDIR) as $bucket) {
         $mtime = (int) @filemtime($bucket);
-        if ($mtime <= 0 || basename($bucket) === $thisHour) {
-            continue;   // 本小时桶：正在被 Apache 直出，绝不删
+        if ($mtime <= 0 || isset($protect[basename($bucket)])) {
+            continue;   // 本小时桶（任一候选时区）：正在被直出，绝不删
         }
         $bytes = 0;
-        foreach ((glob($bucket . '/*') ?: []) as $f) {
+        foreach (vhGlob($bucket . '/*') as $f) {
             if (is_file($f)) {
                 $bytes += (int) @filesize($f);
             }
@@ -459,11 +525,18 @@ function guardClearFiles(string $dir): void {
     if (!is_dir($dir)) {
         return;
     }
-    foreach ((glob($dir . '/*') ?: []) as $f) {
-        if (is_file($f)) {
-            @unlink($f);
+    foreach (vhGlob($dir . '/*') as $f) {
+        if (!is_file($f)) {
+            continue;
         }
+        // ★ 1.5.6：`index.html` 是挡目录列表的，清理时要留住（同 guardGcFiles）
+        if (basename($f) === 'index.html') {
+            continue;
+        }
+        @unlink($f);
     }
+    // 清完顺手补回 index.html（删过就补上，幂等）
+    vhGuardIndex($dir);
 }
 
 /** 递归删除目录（只删自己创建的静态缓存目录，不跟随符号链接） */
@@ -471,7 +544,7 @@ function guardRmDir(string $dir): void {
     if (!is_dir($dir) || is_link($dir)) {
         return;
     }
-    foreach ((scandir($dir) ?: []) as $item) {
+    foreach (vhScandir($dir) as $item) {
         if ($item === '.' || $item === '..') {
             continue;
         }
@@ -532,7 +605,7 @@ function guardGcSessions(int $days): void {
         return;
     }
     $cutoff = time() - $days * 86400;
-    foreach ((glob($real . '/sess_*') ?: []) as $f) {
+    foreach (vhGlob($real . '/sess_*') as $f) {
         $mtime = (int) @filemtime($f);
         if ($mtime > 0 && $mtime < $cutoff) {
             @unlink($f);
@@ -719,16 +792,16 @@ function guardHtAudit(): array {
             case 'php_admin_value':
             case 'php_admin_flag':
                 $r['unsafe'][] = $i + 1 . '|' . $name
-                    . '|**任何情况下都不允许写在 .htaccess 里**，必定 500';
+                    . '|任何情况下都不允许写在 .htaccess 里，必定 500';
                 break;
             case 'Options':
                 $r['unsafe'][] = $i + 1 . '|' . $name
-                    . '|需要 `AllowOverride Options`，多数免费主机只给 `FileInfo` → 整站 500';
+                    . '|需要 AllowOverride Options，多数免费主机只给 FileInfo → 整站 500';
                 break;
             case 'php_value':
             case 'php_flag':
                 $r['unsafe'][] = $i + 1 . '|' . $name
-                    . '|同属 Options 类 → 500；错误输出改由 `includes/guard.php` 的 `ini_set()` 兜底';
+                    . '|同属 Options 类 → 500；错误输出改由 includes/guard.php 的 ini_set() 兜底';
                 break;
             case 'ExpiresActive':
             case 'ExpiresByType':
@@ -737,7 +810,7 @@ function guardHtAudit(): array {
                 // 但只给 FileInfo（rewrite 必需的那一类）的主机会 500 ——
                 // 而这恰恰是「能用 rewrite」最常见的那种配置，风险很高。
                 $r['risky'][] = $i + 1 . '|' . $name
-                    . '|需要 `AllowOverride **Indexes**`（实测 FileInfo 不够）；'
+                    . '|需要 AllowOverride Indexes（实测 FileInfo 不够）；'
                     . '只给 FileInfo 的主机会 500。本项目改用 `Header set Cache-Control` 承担缓存头';
                 break;
         }

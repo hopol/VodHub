@@ -119,17 +119,35 @@ function pcBuckets(): array {
 
     $names = [];
     $add = static function (DateTimeImmutable $d) use (&$names): void {
-        $names[$d->format('Ymd-H')] = true;   // 小时补零（Apache %H / PHP H）
-        $names[$d->format('Ymd-G')] = true;   // 小时不补零（部分 Apache 版本）
+        // ⚠⚠ **只补零一种写法（1.5.6）**：Apache `%{TIME_HOUR}` 恒为补零（00..23），
+        //   所以 `Ymd-G`（小时不补零）那份**永远命不中** —— 是纯粹的写放大。
+        //   1.5.6 之前每页写 4~5 个副本，其中 1~2 个是这种死副本。
+        $names[$d->format('Ymd-H')] = true;
     };
 
     $now = new DateTimeImmutable('now');
 
-    // 1) 应用时区（config.php 设的 Asia/Shanghai）
-    $add($now);
+    // ★ 1.5.6：**Apache 自己报的桶优先**，命中就只写两个（规范桶 + 它）。
+    //   前几个候选都是猜的（应用时区 / ini 时区 / UTC），猜错就永远命不中。
+    $vhBucket = '';
+    foreach ([(string) ($_SERVER['VH_BUCKET'] ?? ''), (string) (vhGetEnv('VH_BUCKET') ?: '')] as $b) {
+        $b = trim($b);
+        if ($b !== '' && preg_match('/^\d{8}-\d{2}$/', $b)) {
+            $vhBucket = $b;
+            break;
+        }
+    }
 
-    // 2) 主机 ini 时区（Apache 多半按它或按系统 UTC 走）
-    $iniTz = trim((string) @ini_get('date.timezone'));
+    if ($vhBucket !== '') {
+        // 有 Apache 自报的桶 → 只写它 + 规范桶。从 4~5 份降到 2 份。
+        $names[$vhBucket] = true;
+        $names[$now->format('Ymd-H')] = true;
+        return $buckets = array_keys($names);
+    }
+
+    // 没有 VH_BUCKET（Nginx / rewrite 不可用）→ 退回猜的候选
+    $add($now);                                                    // 1) 应用时区
+    $iniTz = trim((string) @ini_get('date.timezone'));             // 2) 主机 ini 时区
     if ($iniTz !== '' && strtolower($iniTz) !== strtolower((string) date_default_timezone_get())) {
         try {
             $add($now->setTimezone(new DateTimeZone($iniTz)));
@@ -137,22 +155,7 @@ function pcBuckets(): array {
             // 非法时区名直接忽略
         }
     }
-
-    // 3) UTC（共享主机最常见的系统时区）
-    $add($now->setTimezone(new DateTimeZone('UTC')));
-
-    // 4) **Apache 自己报的桶** —— 前三个都是猜的（应用时区 / ini 时区 / UTC），
-    //    只要 Apache 的系统时区不在这三者之内就**永远命不中**：本地实测
-    //    Apache TZ=Europe/London 时，连着两次请求都回源，页面能用但一层白做。
-    //    `.htaccess` 开头那条 RewriteRule 把 %{TIME_YEAR}%{TIME_MON}%{TIME_DAY}-%{TIME_HOUR}
-    //    写进 VH_BUCKET，这里照抄 —— 「按哪个钟找」和「按哪个钟写」从此同源，
-    //    不存在猜错。没有这个环境变量（.htaccess 没生效 / Nginx）就退回上面三个候选。
-    foreach ([(string) ($_SERVER['VH_BUCKET'] ?? ''), (string) (vhGetEnv('VH_BUCKET') ?: '')] as $b) {
-        $b = trim($b);
-        if ($b !== '' && preg_match('/^\d{8}-\d{1,2}$/', $b)) {
-            $names[$b] = true;
-        }
-    }
+    $add($now->setTimezone(new DateTimeZone('UTC')));              // 3) UTC
 
     return $buckets = array_keys($names);
 }
@@ -208,7 +211,9 @@ function pcWrite(string $key, string $html): void {
  * 「无法获取分类」。这种页面一旦落进小时桶，**接下来整整一小时所有访客都看它**，
  * 而缓存 60 秒后其实已经能补上了。宁可这一小时多渲染几次，也不冻住残页。
  *
- * 谁来标：`VodClient::getTypesLocal()` 在拿到空分类时标一次。
+ * 谁来标：`VodClient::getTypesLocal()` 在**全部源都没分类**时标一次
+ *   （1.5.6 起判据从「一个源空就标」改成「全空才标」，见该函数说明）；
+ *   另外 `list.php` / `play.php` 在上游报错时也会标（1.5.6 加）。
  */
 function pcVolatile(): void {
     $GLOBALS['__pc_volatile'] = true;
@@ -262,9 +267,9 @@ function pcVersionGate(): void {
 
     try {
         // 没有标记却已经有 HTML → 一定是这版代码之前留下的，作废一次
-        $stale = ($old !== null) || ((glob(PAGE_CACHE_DIR . '/*/*.html') ?: []) !== []);
+        $stale = ($old !== null) || (vhGlob(PAGE_CACHE_DIR . '/*/*.html') !== []);
         if ($stale) {
-            foreach ((glob(PAGE_CACHE_DIR . '/*', GLOB_ONLYDIR) ?: []) as $bucket) {
+            foreach (vhGlob(PAGE_CACHE_DIR . '/*', GLOB_ONLYDIR) as $bucket) {
                 guardRmDir($bucket);
             }
         }
@@ -323,7 +328,7 @@ function pcClearNow(): void {
     if (!is_dir($dir)) {
         return;
     }
-    foreach ((scandir($dir) ?: []) as $item) {
+    foreach (vhScandir($dir) as $item) {
         if ($item === '.' || $item === '..') {
             continue;
         }
@@ -378,5 +383,5 @@ function pcSyncGate(): void {
 
 /** 页面缓存当前文件数（后台状态展示用） */
 function pcCount(): int {
-    return count(glob(PAGE_CACHE_DIR . '/*/*.html') ?: []);
+    return count(vhGlob(PAGE_CACHE_DIR . '/*/*.html'));
 }

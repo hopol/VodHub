@@ -23,3 +23,5 @@ Disallow: /c/
 Disallow: /runtime/
 Disallow: /templates/
 Disallow: /static/imgcache/
+# ★ 1.5.6：部署后不该被抓（也不该被 Web 直接访问，.htaccess 已拦）
+Disallow: /tests/

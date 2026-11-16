@@ -48,7 +48,8 @@
         </a>
         <form class="search-box" action="search.php" method="get" role="search">
             <input type="text" name="wd" placeholder="<?= h($tplMeta['search_ph'] !== '' ? $tplMeta['search_ph'] : '搜索…') ?>"
-                   value="<?= h($_GET['wd'] ?? '') ?>" autocomplete="off">
+                   value="<?= h($_GET['wd'] ?? '') ?>" autocomplete="off"
+                   title="搜索按片名开头匹配（上游接口限制），请输片名开头">
             <button type="submit" aria-label="搜索">🔍</button>
         </form>
         <nav class="topbar-nav">

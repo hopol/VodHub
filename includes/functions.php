@@ -8,9 +8,31 @@ require_once __DIR__ . '/imgcache.php';   // coverUrl() 要判断本地是否已
 require_once __DIR__ . '/pagecache.php';  // learnImgHost() 要作废页面静态缓存
 
 if (!function_exists('h')) {
-    /** HTML 转义，防止 XSS */
-    function h(?string $s): string {
-        return htmlspecialchars((string) $s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    /**
+     * HTML 转义，防止 XSS。
+     *
+     * ⚠⚠ **签名收 `$s`（mixed）而不是 `?string`，是 1.5.6 修的一个 P0**：
+     *   PHP 把 `?wd[]=x` 解析成**数组**，`h($_GET['wd'])` 传进来就是
+     *   `TypeError: h(): Argument #1 ($s) must be of type ?string, array given`
+     *   —— 那是**致命错误**（不是警告），且 `display_errors=Off` 让它变成
+     *   **空体 500**。于是 `https://站点/index.php?wd[]=x` 让
+     *   index / list / play / search / history **每一个前台页面**都 500。
+     *
+     *   `login.php?redirect[]=x` 同理（`$_GET['redirect']` 直接进 `h()`）。
+     *
+     *   `search.php` 自己用了 `(string) ($_GET['wd'] ?? '')` 所以没事，
+     *   但 `templates/default/header.php` 直接把 `$_GET['wd']` 喂给了 `h()` ——
+     *   **问题不在调用点，在签名**：一个「转义函数」不该有把整站打死的权限。
+     *
+     *   现在：非标量一律转成空串（与 `(string) null` 的语义一致），
+     *   标量走 `(string)` 强转，行为对原有调用完全不变。
+     */
+    function h($s): string {
+        return htmlspecialchars(
+            is_scalar($s) ? (string) $s : '',
+            ENT_QUOTES | ENT_SUBSTITUTE,
+            'UTF-8'
+        );
     }
 }
 
@@ -243,6 +265,11 @@ function renderPagination(int $page, int $pagecount, string $baseUrl): string {
     if ($pagecount <= 1) {
         return '';
     }
+    // ★ 1.5.6：钳制 page 到 [1, pagecount]。
+    //   原来 `page > pagecount` 时会渲染出「上一页」但没有页码（循环区间为空），
+    //   用户看到一个空壳分页。上游返回的 pagecount 也可能与实际不符。
+    $page      = max(1, min($page, $pagecount));
+    $pagecount = max(1, $pagecount);
     $sep = str_contains($baseUrl, '?') ? '&' : '?';
     $url = fn (int $p) => $baseUrl . $sep . 'page=' . $p;
 
@@ -363,10 +390,24 @@ function cleanHostList(string $raw): string {
         if ($p === '') {
             continue;
         }
-        // 去掉误粘贴的协议与路径
-        $p = preg_replace('#^https?://#', '', $p);
-        $p = preg_replace('#^.*?/#', '', $p);
-        $p = preg_replace('#:\d+$#', '', $p);  // 去端口
+        // ⚠⚠ **顺序必须是「去协议 → 去路径 → 去端口」，且路径要用「吃到最后」的贪婪式**
+        //   （1.5.6 修）。原写法 `preg_replace('#^.*?/#', '', $p)` 是**非贪婪**，
+        //   只吃第一个 `/`，剩下的是**路径**而不是 host，于是：
+        //     · `https://img.example.com/a/b/cover.jpg` → 整条被判非法 → **丢掉**；
+        //     · `img.example.com:8080/x.jpg`           → 变成 `x.jpg`（文件名）。
+        //   站长最自然的操作（从浏览器地址栏复制一个封面 URL 粘进来）得到空结果，
+        //   而后台提示「已更新」。留空 = 不限制域名，功能上不炸，但站长以为加严了，实际没有。
+        //
+        //   ⚠ 通配域名（`*.example.com`）原写法也会被丢（正则 `^[a-z0-9.\-]+$` 放不下 `*`），
+        //     而注释写的是「只保留形如 host 或 *.host 的片段」——**说的和做的不一致**。
+        //     现在归一成裸域（`*.example.com` → `example.com`），
+        //     与 `imgAssertWhitelistHost()` 的后缀匹配语义一致。
+        $p = preg_replace('#^[a-z][a-z0-9+.\-]*://#i', '', $p);   // 去协议（含 https/ftp 等）
+        $p = preg_replace('~[/?#].*$~', '', $p);                   // 去路径/查询/锚点（吃到最后）
+        // ⚠ 分隔符用 `~` 而不是 `#` —— 字符类里有 `#`，用 `#` 做分隔符会报
+        //   `Unknown modifier ']'`（1.5.6 写这行时当场撞上，所以留下这句注释）。
+        $p = preg_replace('#:\d+$#', '', $p);                     // 去端口
+        $p = ltrim($p, '*.');                                      // 通配归一成裸域
         $p = trim($p, '. ');
         if ($p === '' || !preg_match('/^[a-z0-9.\-]+$/', $p)) {
             continue;

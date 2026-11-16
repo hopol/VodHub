@@ -29,7 +29,7 @@ function tplRoot(): string {
 function listTemplates(): array {
     $root = tplRoot();
     $out = [];
-    foreach ((glob($root . '/*', GLOB_ONLYDIR) ?: []) as $dir) {
+    foreach (vhGlob($root . '/*', GLOB_ONLYDIR) as $dir) {
         $name = basename($dir);
         if ($name === '.' || $name === '..') { continue; }
         $meta = tplMeta($name);

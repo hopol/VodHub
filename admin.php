@@ -57,13 +57,30 @@ require_once __DIR__ . '/includes/admin-actions.php';
 
 sessionStart();
 
+// ★ 1.5.6：后台安全响应头（前台不加，避免影响 SEO / 缓存行为）
+//   · X-Frame-Options: DENY —— 防点击劫持（后台有破坏性按钮，被 iframe 嵌套
+//     后「点确定」可能被诱导到别的操作上）
+//   · Referrer-Policy: same-origin —— 后台 URL 不外泄给第三方
+//   · X-Content-Type-Options: nosniff —— 与 .htaccess 的图片规则同一口径
+if (!headers_sent()) {
+    header('X-Frame-Options: DENY');
+    header('Referrer-Policy: same-origin');
+    header('X-Content-Type-Options: nosniff');
+}
+
 // ---------------------------------------------------------------- 处理 POST
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = (string) ($_POST['action'] ?? '');
 
     // 后台登录（登录表单页也提交到此处）
     if ($action === 'login') {
-        $pwd = (string) ($_POST['admin_password'] ?? '');
+        // ★ 1.5.6：登录无限速是真实攻击面 —— bcrypt 能拖慢单次尝试，
+        //   但 `admin123` 这类弱口令在无限制下仍可被撞开，且失败无锁定、无告警。
+        //   10 次/分钟/IP 对真人绰绰有余（输错 10 次通常已经放弃），
+        //   对字典攻击则是明显的减速带。超限返回 429 而不是 503 ——
+        //   日志里就能分清「被限流」和「EP 打满」。
+        guardCheck('admin_login', 10);
+        $pwd = (string) (is_scalar($_POST['admin_password'] ?? null) ? $_POST['admin_password'] : '');
         if (!verifyCsrf($_POST['csrf'] ?? null)) {
             $GLOBALS['admin_login_error'] = '表单已过期，请重试';
         } elseif (password_verify($pwd, setting('admin_password'))) {
@@ -80,21 +97,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
-
-
-
-
-
-
-
-
     // 以下操作均需登录
     requireAdmin();
 
     if (!verifyCsrf($_POST['csrf'] ?? null)) {
         $msg = '⚠️ 表单令牌已过期，请重试';
     } else {
-        $msg = adminHandlePost();
+        // ★ 1.5.6：adminHandlePost() 抛异常（典型是 DB 被锁、磁盘满）会让
+        //   后台**半页截断**，站长看到的是「页面正常但下半截没了」——
+        //   那正是本文件顶部那个 shutdown 提示担心的形态。
+        //   包一层 try/catch，把异常变成一条能看懂的提示，页面照常渲染完。
+        try {
+            $msg = adminHandlePost();
+        } catch (Throwable $e) {
+            $msg = '⚠️ 操作失败：' . $e->getMessage();
+        }
     }
 }
 
@@ -113,7 +130,9 @@ requireAdmin();
 // 配置导出：admin.php?export=1[&secrets=1] → 直接下载 JSON。
 // 放在渲染之前 —— header() 一旦有 HTML 输出就失效；鉴权已由上面的 requireAdmin() 挡住。
 if (isset($_GET['export'])) {
-    configExportDownload(isset($_GET['secrets']) && $_GET['secrets'] !== '');
+    // ⚠ 1.5.6：`?secrets=0` 原来也会导出密钥（判定写的是 `!= ''`）。
+    //   导出密钥是**敏感操作**，必须显式 `=1` 才算勾选。
+    configExportDownload(($_GET['secrets'] ?? '') === '1');
 }
 
 // ---------------------------------------------------------------- 渲染
@@ -229,7 +248,7 @@ $editingGroup = $editGid > 0 ? getGroup($editGid) : null;
             <?php [$vhLn, $vhNm, $vhWhy] = array_pad(explode('|', (string) $vhU, 3), 3, ''); ?>
             &nbsp;&nbsp;· 第 <b><?= h($vhLn) ?></b> 行 <code><?= h($vhNm) ?></code> —— <?= h($vhWhy) ?><br>
         <?php endforeach; ?>
-        <b>处理：</b>把上面这几行**整段删掉**（连同它所在的 <code>&lt;IfModule&gt;</code> 块），
+        <b>处理：</b>把上面这几行<b>整段删掉</b>（连同它所在的 <code>&lt;IfModule&gt;</code> 块），
         然后刷新本页。<b>站点功能不受影响</b> —— 它们的职责已经改由不需要任何服务器配置的东西兜底：<br>
         &nbsp;&nbsp;· <code>Options -Indexes</code> → 各目录下的空 <code>index.html</code>
         （<code>DirectoryIndex index.html</code> 是 Apache <b>主配置的默认值</b>，不要求 AllowOverride）<br>
@@ -241,8 +260,8 @@ $editingGroup = $editGid > 0 ? getGroup($editGid) : null;
     <?php if (!$vhHt['unsafe'] && $vhHt['risky']): ?>
     <div class="alert" style="line-height:1.7;border-left-color:#f0ad4e;background:#fcf8e3">
         🟡 <b>`.htaccess` 里有 <?= count($vhHt['risky']) ?> 条指令需要 <code>AllowOverride Indexes</code></b>
-        —— 本机现在是通的（否则你连这一页都看不到），但**换一台只给 <code>FileInfo</code>
-        的免费空间就会整站 500**（而 FileInfo 恰恰是 <code>RewriteEngine</code> 必需的那一类）：<br>
+        —— 本机现在是通的（否则你连这一页都看不到），但<b>换一台只给 <code>FileInfo</code>
+        的免费空间就会整站 500</b>（而 FileInfo 恰恰是 <code>RewriteEngine</code> 必需的那一类）：<br>
         <?php foreach ($vhHt['risky'] as $vhU): ?>
             <?php [$vhLn, $vhNm, $vhWhy] = array_pad(explode('|', (string) $vhU, 3), 3, ''); ?>
             &nbsp;&nbsp;· 第 <b><?= h($vhLn) ?></b> 行 <code><?= h($vhNm) ?></code> —— <?= h($vhWhy) ?><br>
@@ -288,6 +307,18 @@ $editingGroup = $editGid > 0 ? getGroup($editGid) : null;
         → <b>不会泄露任何东西</b>，只是页面静态直出与静态资源缓存头不生效
         （每页多 1 个 PHP 进程，约 3 ms，功能完全正常）。<br>
         想启用加速就单独上传 <code>.htaccess</code>；不传也能跑。
+    </div>
+    <?php endif; ?>
+
+    <?php
+    // ★ 1.5.6：管理密码仍是出厂默认值 → 最高优先级告警（放在自检区最前面）
+    //   没有这条时，「改过密码」和「没改过」在界面上完全一样，
+    //   而攻击者只需试一个密码就能进后台。
+    if (function_exists('isAdminPasswordDefault') && isAdminPasswordDefault()): ?>
+    <div class="alert alert-error">
+        🛑 <b>管理密码仍是出厂默认值 <code>admin123</code></b> ——
+        任何人知道这个默认值就能进你的后台（含全部数据源接口地址与管理密码设置）。<br>
+        <b>立刻处理：</b>下方「访问设置 → 修改管理密码」，改完再回到本页确认这条消失。
     </div>
     <?php endif; ?>
 
@@ -340,5 +371,8 @@ $editingGroup = $editGid > 0 ? getGroup($editGid) : null;
 <footer class="footer">
     <p>单用户模式 · 数据存于本机 SQLite · 所有内容来自第三方接口</p>
 </footer>
+<!-- ★ 1.5.6：后台也要加载 app.js —— 它里面有「#adminMsg 3 秒后淡出」那段，
+     而 admin.php 此前根本没有 <script>，那段一直是死代码（消息永远不淡出）。 -->
+<script src="static/app.js"></script>
 </body>
 </html>
